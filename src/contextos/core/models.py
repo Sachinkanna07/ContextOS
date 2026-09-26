@@ -1,0 +1,459 @@
+"""Core domain models for ContextOS.
+
+All domain objects are Pydantic models for:
+- Validation at construction time
+- Serialization to/from JSON and SQLite
+- Automatic schema generation for API docs
+
+These models are the canonical representation of data flowing through the system.
+Storage layers convert to/from these models; business logic operates on them.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID, uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+
+from contextos.core.enums import (
+    EventType,
+    MemoryStatus,
+    MemoryType,
+    PrivacyLevel,
+    RelationType,
+    SecretType,
+)
+
+
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+
+
+def _utcnow() -> datetime:
+    """Return timezone-aware UTC now. Avoids naive datetime issues."""
+    return datetime.now(timezone.utc)
+
+
+def _content_hash(content: str) -> str:
+    """Compute a normalized content hash for deduplication.
+
+    Normalization: strip, collapse whitespace, lowercase.
+    Using SHA-256 truncated to 16 hex chars (64 bits) — collision probability
+    is negligible for our scale (< 1M memories).
+    """
+    normalized = " ".join(content.strip().lower().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Memory
+# ---------------------------------------------------------------------------
+
+
+class Memory(BaseModel):
+    """A discrete unit of user knowledge extracted from raw input.
+
+    Memories are the primary data objects in ContextOS. They have lifecycle
+    state, confidence, importance, provenance, and privacy classification.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    content: str = Field(min_length=1, max_length=10_000)
+    content_hash: str = Field(default="")
+    type: MemoryType = Field(default=MemoryType.CONTEXT)
+    source_type: str = Field(default="cli_input")
+    source_uri: str | None = Field(default=None)
+    provenance_event_id: UUID | None = Field(default=None)
+    status: MemoryStatus = Field(default=MemoryStatus.CANDIDATE)
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    privacy_level: PrivacyLevel = Field(default=PrivacyLevel.PERSONAL)
+    token_count: int = Field(default=0, ge=0)
+    embedding_id: str | None = Field(default=None)
+    superseded_by: UUID | None = Field(default=None)
+    supersedes: UUID | None = Field(default=None)
+    access_count: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+    last_accessed_at: datetime | None = Field(default=None)
+    expires_at: datetime | None = Field(default=None)
+    version: int = Field(default=1, ge=1)
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("content")
+    @classmethod
+    def nonblank_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Memory content cannot be blank")
+        return value
+
+    @field_validator("created_at", "updated_at", "last_accessed_at", "expires_at")
+    @classmethod
+    def aware_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("Memory timestamps must include a timezone")
+        return value
+
+    def model_post_init(self, _context: Any) -> None:
+        """Keep the derived hash consistent with the actual content."""
+        self.content_hash = _content_hash(self.content)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_retrievable(self) -> bool:
+        """Whether this memory should appear in retrieval results."""
+        return self.status in {
+            MemoryStatus.ACTIVE,
+            MemoryStatus.SUPERSEDED,
+            MemoryStatus.CONTRADICTED,
+            MemoryStatus.EXPIRED,
+        }
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_compilable(self) -> bool:
+        """Whether this memory can be included in compiled context."""
+        return self.status == MemoryStatus.ACTIVE
+
+
+class MemoryUpdate(BaseModel):
+    """Fields that can be updated on an existing memory.
+
+    Only non-None fields are applied. This is a partial update model.
+    """
+
+    content: str | None = Field(default=None, min_length=1, max_length=10_000)
+    type: MemoryType | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    importance: float | None = Field(default=None, ge=0.0, le=1.0)
+    privacy_level: PrivacyLevel | None = None
+    expires_at: datetime | None = None
+    tags: list[str] | None = None
+
+    @field_validator("content")
+    @classmethod
+    def nonblank_content(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("Memory content cannot be blank")
+        return value
+
+    @field_validator("expires_at")
+    @classmethod
+    def aware_expiry(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("Memory expiry must include a timezone")
+        return value
+
+
+# ---------------------------------------------------------------------------
+# Memory Relations
+# ---------------------------------------------------------------------------
+
+
+class MemoryRelation(BaseModel):
+    """A typed, directional relationship between two memories."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    source_memory_id: UUID
+    target_memory_id: UUID
+    relation_type: RelationType
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    created_at: datetime = Field(default_factory=_utcnow)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Raw Events
+# ---------------------------------------------------------------------------
+
+
+class RawEvent(BaseModel):
+    """An immutable record of something that happened in ContextOS.
+
+    Events form the append-only audit log. Memories are derived from events,
+    but events are never modified (except by explicit purge).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    event_type: EventType
+    timestamp: datetime = Field(default_factory=_utcnow)
+    source_type: str = Field(default="system")
+    source_uri: str | None = Field(default=None)
+    content: str | None = Field(default=None)
+    content_hash: str | None = Field(default=None)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    privacy_scan_result: dict[str, Any] | None = Field(default=None)
+    memory_ids: list[UUID] = Field(default_factory=list)
+
+    def model_post_init(self, _context: Any) -> None:
+        """Compute content_hash for ingest events if content is present."""
+        if self.content and not self.content_hash:
+            self.content_hash = _content_hash(self.content)
+
+
+# ---------------------------------------------------------------------------
+# Secret Scanner Results
+# ---------------------------------------------------------------------------
+
+
+class SecretMatch(BaseModel):
+    """A single secret detected in scanned text."""
+
+    secret_type: SecretType
+    start: int  # Character offset in original text
+    end: int
+    matched_text: str = Field(default="", repr=False)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class ScanResult(BaseModel):
+    """Result of scanning text for secrets."""
+
+    has_secrets: bool = False
+    matches: list[SecretMatch] = Field(default_factory=list)
+    scanned_length: int = 0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def secret_types_found(self) -> list[SecretType]:
+        """Unique secret types detected."""
+        return list({m.secret_type for m in self.matches})
+
+
+# ---------------------------------------------------------------------------
+# Retrieval Results
+# ---------------------------------------------------------------------------
+
+
+class ScoredMemory(BaseModel):
+    """A memory with retrieval scores attached."""
+
+    memory: Memory
+    final_score: float = Field(ge=0.0)
+    vector_score: float | None = None
+    bm25_score: float | None = None
+    rrf_rank: int = Field(default=0, ge=0)
+    rerank_score: float | None = None
+
+
+class StageTrace(BaseModel):
+    """Trace data for a single pipeline stage."""
+
+    stage_name: str
+    input_count: int = 0
+    output_count: int = 0
+    latency_ms: float = 0.0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RetrievalTrace(BaseModel):
+    """Full trace of a retrieval operation."""
+
+    stages: list[StageTrace] = Field(default_factory=list)
+    total_latency_ms: float = 0.0
+    total_candidates: int = 0
+    total_results: int = 0
+
+
+class RetrievalResult(BaseModel):
+    """Complete result of a retrieval query."""
+
+    query: str
+    memories: list[ScoredMemory] = Field(default_factory=list)
+    strategy_results: dict[str, list[ScoredMemory]] = Field(default_factory=dict)
+    trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
+
+
+# ---------------------------------------------------------------------------
+# Compilation Results
+# ---------------------------------------------------------------------------
+
+
+class CompilationTrace(BaseModel):
+    """Trace data for context compilation."""
+
+    stages: list[StageTrace] = Field(default_factory=list)
+    memories_considered: int = 0
+    memories_included: int = 0
+    memories_excluded: int = 0
+    value_densities: dict[str, float] = Field(default_factory=dict)
+    total_latency_ms: float = 0.0
+
+
+class CompiledContext(BaseModel):
+    """The final compiled context ready to send to an LLM."""
+
+    query: str
+    context_text: str
+    total_tokens: int = Field(ge=0)
+    budget: int = Field(ge=0)
+    memories_considered: int = Field(ge=0)
+    memories_included: int = Field(ge=0)
+    memories_excluded: int = Field(ge=0)
+    compression_ratio: float = Field(ge=0.0)
+    included_memory_ids: list[UUID] = Field(default_factory=list)
+    trace: CompilationTrace = Field(default_factory=CompilationTrace)
+
+
+# ---------------------------------------------------------------------------
+# Ingestion Models
+# ---------------------------------------------------------------------------
+
+
+class IngestRequest(BaseModel):
+    """Request to ingest content into ContextOS."""
+
+    content: str = Field(min_length=1, max_length=100_000)
+    source_type: str = Field(default="cli_input")
+    source_uri: str | None = None
+    memory_type: MemoryType | None = None
+    tags: list[str] = Field(default_factory=list)
+    skip_secret_scan: bool = Field(default=False)
+
+
+class ExtractedMemory(BaseModel):
+    """A memory extracted by the memory extractor, before storage."""
+
+    content: str = Field(min_length=1)
+    type: MemoryType = Field(default=MemoryType.CONTEXT)
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    tags: list[str] = Field(default_factory=list)
+
+
+class IngestResult(BaseModel):
+    """Result of an ingestion operation."""
+
+    event_id: UUID
+    memories_created: list[UUID] = Field(default_factory=list)
+    memories_updated: list[UUID] = Field(default_factory=list)
+    memories_merged: list[UUID] = Field(default_factory=list)
+    secrets_detected: bool = False
+    secrets_redacted: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval / Compilation Config
+# ---------------------------------------------------------------------------
+
+
+class RetrievalConfig(BaseModel):
+    """Configuration for a retrieval query."""
+
+    vector_top_k: int = Field(default=20, ge=1, le=200)
+    bm25_top_k: int = Field(default=20, ge=1, le=200)
+    rrf_k: int = Field(default=60, ge=1)
+    include_superseded: bool = False
+    include_contradicted: bool = True
+    include_expired: bool = False
+    max_results: int = Field(default=50, ge=1, le=200)
+    min_score: float = Field(default=0.0, ge=0.0)
+
+
+class CompilationConfig(BaseModel):
+    """Configuration for context compilation."""
+
+    budget: int = Field(default=4000, ge=100, le=32_000)
+    include_sources: bool = True
+    include_confidence: bool = False
+    format: str = Field(default="text")  # "text" or "json"
+
+
+# ---------------------------------------------------------------------------
+# System Status
+# ---------------------------------------------------------------------------
+
+
+class SystemStatus(BaseModel):
+    """Current system health and statistics."""
+
+    daemon_running: bool = False
+    pid: int | None = None
+    uptime_seconds: float = 0.0
+    total_memories: int = 0
+    active_memories: int = 0
+    total_events: int = 0
+    embedding_model: str = ""
+    embedding_model_loaded: bool = False
+    vector_index_size: int = 0
+    bm25_index_size: int = 0
+    database_size_bytes: int = 0
+    data_directory: str = ""
+
+
+class TokenStats(BaseModel):
+    """Aggregate token statistics."""
+
+    total_tokens_stored: int = 0
+    total_compilations: int = 0
+    total_tokens_compiled: int = 0
+    total_tokens_saved: int = 0
+    average_compression_ratio: float = 0.0
+    tokens_per_memory: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Vector / Lexical search result types used by storage protocols
+# ---------------------------------------------------------------------------
+
+
+class VectorResult(BaseModel):
+    """Result from vector store search."""
+
+    id: str
+    score: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LexicalResult(BaseModel):
+    """Result from BM25 / lexical search."""
+
+    id: str
+    score: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
+
+
+class MemoryFilters(BaseModel):
+    """Filters for listing/querying memories."""
+
+    status: MemoryStatus | None = None
+    type: MemoryType | None = None
+    privacy_level: PrivacyLevel | None = None
+    source_type: str | None = None
+    tags: list[str] | None = None
+    created_after: datetime | None = None
+    created_before: datetime | None = None
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_importance: float | None = Field(default=None, ge=0.0, le=1.0)
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class EventFilters(BaseModel):
+    """Filters for querying events."""
+
+    event_type: EventType | None = None
+    source_type: str | None = None
+    after: datetime | None = None
+    before: datetime | None = None
+    memory_id: UUID | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
