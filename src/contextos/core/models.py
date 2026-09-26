@@ -21,9 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 from contextos.core.enums import (
     CandidateAction,
     CandidateTemporalStatus,
+    ExclusionReason,
     EventType,
     MemoryStatus,
     MemoryType,
+    OptimizationStrategy,
     PrivacyClassification,
     PrivacyDecision,
     PrivacyLevel,
@@ -374,6 +376,81 @@ class RetrievalQuery(BaseModel):
         if self.allowed_statuses and self.allowed_statuses & forbidden:
             raise ValueError("Unaccepted or deleted memories are not retrievable")
         return self
+
+
+# ---------------------------------------------------------------------------
+# Token-aware selection
+# ---------------------------------------------------------------------------
+
+
+class ContextBudget(BaseModel):
+    """Token allocation available to memory context only."""
+
+    max_tokens: int = Field(ge=0)
+    reserved_tokens: int = Field(default=0, ge=0)
+    overhead_per_memory: int = Field(default=2, ge=0)
+
+    @model_validator(mode="after")
+    def reservation_fits(self) -> ContextBudget:
+        if self.reserved_tokens > self.max_tokens:
+            raise ValueError("reserved_tokens cannot exceed max_tokens")
+        return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def available_tokens(self) -> int:
+        return self.max_tokens - self.reserved_tokens
+
+
+class CandidateDecision(BaseModel):
+    """Inspectable optimization decision without raw memory content."""
+
+    memory_id: UUID
+    token_cost: int = Field(ge=0)
+    content_tokens: int = Field(ge=0)
+    overhead_tokens: int = Field(ge=0)
+    retrieval_score: float = Field(ge=0.0)
+    normalized_relevance: float = Field(ge=0.0, le=1.0)
+    importance_contribution: float = Field(ge=0.0, le=0.1)
+    confidence_contribution: float = Field(ge=0.0, le=0.1)
+    support_contribution: float = Field(ge=0.0, le=0.05)
+    lifecycle_multiplier: float = Field(ge=0.0, le=1.0)
+    base_utility: float = Field(ge=0.0, le=1.0)
+    marginal_utility: float = Field(ge=0.0)
+    redundancy: float = Field(ge=0.0, le=1.0)
+    selected: bool = False
+    exclusion_reason: ExclusionReason | None = None
+    redundant_with: UUID | None = None
+
+
+class OptimizationTrace(BaseModel):
+    """Structured account of every token-aware selection decision."""
+
+    strategy: OptimizationStrategy
+    candidate_count: int = Field(ge=0)
+    eligible_count: int = Field(ge=0)
+    selected_count: int = Field(ge=0)
+    budget_tokens: int = Field(ge=0)
+    reserved_tokens: int = Field(ge=0)
+    available_tokens: int = Field(ge=0)
+    tokens_used: int = Field(ge=0)
+    remaining_tokens: int = Field(ge=0)
+    latency_ms: float = Field(ge=0.0)
+    decisions: list[CandidateDecision] = Field(default_factory=list)
+
+
+class SelectionResult(BaseModel):
+    """Whole-memory selection produced after retrieval and before compilation."""
+
+    strategy: OptimizationStrategy
+    selected_memories: list[ScoredMemory] = Field(default_factory=list)
+    total_tokens: int = Field(ge=0)
+    content_tokens: int = Field(ge=0)
+    overhead_tokens: int = Field(ge=0)
+    budget: ContextBudget
+    remaining_tokens: int = Field(ge=0)
+    utilization: float = Field(ge=0.0, le=1.0)
+    trace: OptimizationTrace
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,12 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     token_counter = TiktokenCounter()
     services["token_counter"] = token_counter
 
+    # --- Token-aware optimizer ---
+    from contextos.services.optimization import MemoryContextOptimizer
+
+    optimizer = MemoryContextOptimizer(token_counter=token_counter)
+    services["optimizer"] = optimizer
+
     # --- Embedding Service ---
     from contextos.embedding.sentence_transformers import SentenceTransformerEmbedding
 

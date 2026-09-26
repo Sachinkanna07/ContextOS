@@ -134,6 +134,29 @@ class TemporalScope(StrEnum):
     ALL = "all"
 
 
+class OptimizationStrategy(StrEnum):
+    """Algorithms available for memory-context selection."""
+
+    TOP_RANK = "top_rank"
+    TOP_RANK_STOP = "top_rank"
+    """Explicit alias for the original stop-at-first-nonfit baseline."""
+
+    TOP_RANK_SKIP = "top_rank_skip"
+    GREEDY = "greedy"
+    CONTEXTOS = "contextos"
+
+
+class ExclusionReason(StrEnum):
+    """Why an optimizer candidate was not selected."""
+
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    DUPLICATE_ID = "duplicate_id"
+    INVALID_LIFECYCLE = "invalid_lifecycle"
+    LOW_RELEVANCE = "low_relevance"
+    OVERSIZED = "oversized"
+    REDUNDANT = "redundant"
+
+
 class CandidateTemporalStatus(StrEnum):
     """Temporal interpretation inferred during candidate extraction."""
 

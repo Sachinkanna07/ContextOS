@@ -15,11 +15,12 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
-from contextos.core.enums import MemoryStatus, MemoryType, SourceRole
+from contextos.core.enums import MemoryStatus, MemoryType, OptimizationStrategy, SourceRole
 from contextos.core.models import (
     CandidateMemory,
     CompiledContext,
     CompilationConfig,
+    ContextBudget,
     EventFilters,
     IngestRequest,
     IngestResult,
@@ -32,6 +33,7 @@ from contextos.core.models import (
     RetrievalConfig,
     RetrievalQuery,
     RetrievalResult,
+    SelectionResult,
     ScanResult,
     ScoredMemory,
     StageTrace,
@@ -226,6 +228,19 @@ class CompilationService(Protocol):
         memories: list[ScoredMemory],
         config: CompilationConfig | None = None,
     ) -> CompiledContext: ...
+
+
+@runtime_checkable
+class TokenAwareOptimizer(Protocol):
+    """Select whole retrieved memories within a memory-context budget."""
+
+    def optimize(
+        self,
+        query: str,
+        candidates: list[ScoredMemory],
+        budget: ContextBudget,
+        strategy: OptimizationStrategy = OptimizationStrategy.CONTEXTOS,
+    ) -> SelectionResult: ...
 
 
 # ---------------------------------------------------------------------------

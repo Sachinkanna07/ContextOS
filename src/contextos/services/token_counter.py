@@ -6,6 +6,8 @@ as the reference tokenizer for token accounting.
 
 from __future__ import annotations
 
+import re
+
 import tiktoken
 
 
@@ -32,3 +34,25 @@ class TiktokenCounter:
     @property
     def encoding_name(self) -> str:
         return self._encoding_name
+
+
+class DeterministicWordTokenCounter:
+    """Offline word-token approximation for tests and reproducible benchmarks.
+
+    This deliberately does not claim compatibility with a model tokenizer.
+    Production selection uses :class:`TiktokenCounter`.
+    """
+
+    _TOKEN_PATTERN = re.compile(
+        r"[A-Za-z0-9]+(?:(?:[+#._-]+)[A-Za-z0-9]+)*|[^\w\s]"
+    )
+
+    def count(self, text: str) -> int:
+        return len(self._TOKEN_PATTERN.findall(text))
+
+    def count_batch(self, texts: list[str]) -> list[int]:
+        return [self.count(text) for text in texts]
+
+    @property
+    def encoding_name(self) -> str:
+        return "deterministic-word-approximation"
