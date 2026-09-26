@@ -15,12 +15,12 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
-from contextos.core.enums import MemoryStatus
+from contextos.core.enums import MemoryStatus, MemoryType, SourceRole
 from contextos.core.models import (
+    CandidateMemory,
     CompiledContext,
     CompilationConfig,
     EventFilters,
-    ExtractedMemory,
     IngestRequest,
     IngestResult,
     LexicalResult,
@@ -273,7 +273,9 @@ class MemoryExtractor(Protocol):
         source_uri: str | None = None,
         suggested_type: MemoryType | None = None,
         tags: list[str] | None = None,
-    ) -> list[ExtractedMemory]: ...
+        source_role: SourceRole = SourceRole.USER,
+        confirmed_user_information: bool = False,
+    ) -> list[CandidateMemory]: ...
 
 
 @runtime_checkable
@@ -281,7 +283,7 @@ class DuplicateDetector(Protocol):
     """Detect duplicates and near-duplicates against existing memories."""
 
     async def check(
-        self, candidate: ExtractedMemory, existing_memories: list[Memory] | None = None
+        self, candidate: CandidateMemory, existing_memories: list[Memory] | None = None
     ) -> DuplicateCheckResult: ...
 
 

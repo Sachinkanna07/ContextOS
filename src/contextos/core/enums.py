@@ -118,6 +118,30 @@ class MemoryType(StrEnum):
     """General contextual information that doesn't fit other categories."""
 
 
+class CandidateTemporalStatus(StrEnum):
+    """Temporal interpretation inferred during candidate extraction."""
+
+    CURRENT = "current"
+    HISTORICAL = "historical"
+    FUTURE = "future"
+    UNSPECIFIED = "unspecified"
+
+
+class CandidateAction(StrEnum):
+    """Non-binding hint for a later candidate validation stage."""
+
+    ADD = "add"
+    SUPERSEDE = "supersede"
+
+
+class SourceRole(StrEnum):
+    """Who authored the text presented to the extractor."""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
 class PrivacyLevel(StrEnum):
     """Privacy classification for memories.
 

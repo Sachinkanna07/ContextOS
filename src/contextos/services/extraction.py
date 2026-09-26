@@ -1,134 +1,251 @@
-"""Rule-based memory extractor for ContextOS.
+"""Deterministic candidate extraction for ContextOS Phase 2.
 
-Phase 1 implementation: extracts discrete memories from raw text using
-heuristic rules. No LLM dependency.
-
-Strategy:
-1. Split input into sentences/segments.
-2. Classify each segment by memory type using keyword patterns.
-3. Filter out segments that are too short, too generic, or not memory-worthy.
-4. Assign confidence and importance scores based on linguistic signals.
-
-This is deliberately simple and will be the baseline for evaluating
-LLM-based extraction in Phase 2.
+The extractor is deliberately local and side-effect free. It turns raw user
+text into unaccepted CandidateMemory objects; it never writes long-term memory.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
+from dataclasses import dataclass
 
-from contextos.core.enums import MemoryType
-from contextos.core.models import ExtractedMemory
-
-
-# ---------------------------------------------------------------------------
-# Type Classification Patterns
-# ---------------------------------------------------------------------------
-
-# Patterns that suggest a specific memory type.
-# Each tuple: (compiled_regex, memory_type, importance_boost)
-TYPE_PATTERNS: list[tuple[re.Pattern[str], MemoryType, float]] = [
-    # Preferences
-    (re.compile(r"\b(?:i prefer|i like|i use|i always|i never|my favorite|i choose|i go with)\b", re.I), MemoryType.PREFERENCE, 0.1),
-    # Skills
-    (re.compile(r"\b(?:i(?:'m| am) (?:proficient|experienced|skilled|good|fluent) (?:in|at|with))\b", re.I), MemoryType.SKILL, 0.1),
-    (re.compile(r"\b(?:i (?:know|can|understand|have experience with))\b", re.I), MemoryType.SKILL, 0.05),
-    # Facts
-    (re.compile(r"\b(?:i (?:work|live|study|teach|manage|lead) (?:at|in|for))\b", re.I), MemoryType.FACT, 0.1),
-    (re.compile(r"\b(?:my (?:name|email|phone|address|title|role|job|company) (?:is|:))\b", re.I), MemoryType.FACT, 0.15),
-    # Projects
-    (re.compile(r"\b(?:i(?:'m| am) (?:building|working on|developing|creating|maintaining))\b", re.I), MemoryType.PROJECT, 0.1),
-    (re.compile(r"\b(?:my project|our project|the project|current project)\b", re.I), MemoryType.PROJECT, 0.05),
-    # Relationships
-    (re.compile(r"\b(?:\w+ is my (?:manager|boss|lead|mentor|colleague|friend|partner|wife|husband))\b", re.I), MemoryType.RELATIONSHIP, 0.1),
-    # Procedures
-    (re.compile(r"\b(?:to (?:deploy|build|test|run|install|setup|configure),? i)\b", re.I), MemoryType.PROCEDURE, 0.1),
-    (re.compile(r"\b(?:my (?:workflow|process|routine|setup) (?:is|for|:))\b", re.I), MemoryType.PROCEDURE, 0.1),
-    # Opinions
-    (re.compile(r"\b(?:i (?:think|believe|feel|find) (?:that)?)\b", re.I), MemoryType.OPINION, 0.0),
-    (re.compile(r"\b(?:in my (?:opinion|experience|view))\b", re.I), MemoryType.OPINION, 0.0),
-    # Goals
-    (re.compile(r"\b(?:i want to|i(?:'d| would) like to|i plan to|i(?:'m| am) going to|my goal is)\b", re.I), MemoryType.GOAL, 0.05),
-    # Temporal
-    (re.compile(r"\b(?:this (?:week|month|sprint|quarter)|today|tomorrow|next (?:week|month)|currently|right now)\b", re.I), MemoryType.TEMPORAL, -0.1),
-]
-
-# Signals that increase confidence
-CONFIDENCE_BOOSTERS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(r"\b(?:always|never|definitely|absolutely|certainly)\b", re.I), 0.1),
-    (re.compile(r"\b(?:i've been|for years|for a long time|since \d{4})\b", re.I), 0.1),
-]
-
-# Signals that decrease confidence
-CONFIDENCE_DAMPENERS: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(r"\b(?:maybe|perhaps|might|sometimes|occasionally|i guess|not sure)\b", re.I), -0.15),
-    (re.compile(r"\b(?:used to|previously|back when|in the past)\b", re.I), -0.1),
-]
-
-# Minimum useful content length (characters)
-MIN_SEGMENT_LENGTH = 10
-
-# Segments matching these patterns are not memory-worthy
-SKIP_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"^(?:ok|okay|sure|yes|no|thanks|thank you|got it|understood|hmm|huh)\s*[.!?]?$", re.I),
-    re.compile(r"^(?:hi|hello|hey|good morning|good evening)\b", re.I),
-    re.compile(r"^\s*$"),
-]
+from contextos.core.enums import (
+    CandidateAction,
+    CandidateTemporalStatus,
+    MemoryType,
+    SourceRole,
+)
+from contextos.core.models import CandidateMemory
 
 
-# ---------------------------------------------------------------------------
-# Text Segmentation
-# ---------------------------------------------------------------------------
+MAX_INPUT_CHARS = 100_000
+MAX_CANDIDATES = 100
+MAX_CLAUSE_CHARS = 9_000
 
 
-def _segment_text(text: str) -> list[str]:
-    """Split text into meaningful segments for extraction.
+@dataclass(frozen=True)
+class _Clause:
+    text: str
+    evidence: str
+    start: int | None = None
+    end: int | None = None
 
-    Strategy:
-    1. Split on paragraph breaks (double newlines).
-    2. For long paragraphs, split on sentence boundaries.
-    3. Preserve segments that contain complete thoughts.
-    """
-    # First split on paragraph breaks
-    paragraphs = re.split(r"\n\s*\n", text.strip())
 
-    segments: list[str] = []
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
+_TYPE_RULES: tuple[tuple[MemoryType, re.Pattern[str]], ...] = (
+    (MemoryType.PREFERENCE, re.compile(
+        r"\b(?:prefer|preference|favorite|always use|never use|keep (?:your )?answers)\b", re.I
+    )),
+    (MemoryType.GOAL, re.compile(
+        r"\b(?:want to|would like to|plan(?:ning)? to|going to|goal|prepar(?:e|ing) for|"
+        r"focus(?:ing)?(?: mainly)? on|switch(?:ing)? (?:from|to)|"
+        r"(?:i(?:'ll| will| might| may)|maybe i(?:'ll| will)) learn|might learn|may learn|will learn)\b",
+        re.I,
+    )),
+    (MemoryType.PROJECT, re.compile(
+        r"\b(?:building|working on|developing|creating|maintaining|my project|current project)\b", re.I
+    )),
+    (MemoryType.SKILL, re.compile(
+        r"\b(?:proficient|experienced|skilled|fluent|know|learning|learned|experience with)\b", re.I
+    )),
+    (MemoryType.RELATIONSHIP, re.compile(
+        r"\b(?:manager|boss|lead|mentor|colleague|friend|partner|wife|husband)\b", re.I
+    )),
+    (MemoryType.PROCEDURE, re.compile(
+        r"\b(?:workflow|process|routine|setup|to (?:deploy|build|test|run|install|configure))\b", re.I
+    )),
+    (MemoryType.OPINION, re.compile(r"\b(?:i think|i believe|in my opinion|in my view)\b", re.I)),
+    (MemoryType.FACT, re.compile(
+        r"\b(?:work(?:ing)? at|live in|study at|teach at|my (?:name|role|job|company)|i use)\b", re.I
+    )),
+    (MemoryType.TEMPORAL, re.compile(
+        r"\b(?:today|tomorrow|this (?:week|month|sprint)|next (?:week|month)|right now)\b", re.I
+    )),
+)
+
+_FILLER = re.compile(
+    r"^(?:ok(?:ay)?|sure|yes|no|thanks|thank you|nice|lol|continue|got it|understood|"
+    r"hi|hello|hey|hmm|huh)[.!?]*$",
+    re.I,
+)
+_CASUAL = re.compile(r"^(?:the )?weather (?:looks|is) (?:good|nice|great)[.!?]*$", re.I)
+_PERSONAL_SIGNAL = re.compile(r"\b(?:i|i'm|i've|i'll|i'd|my|me|user|the user)\b", re.I)
+_UNCERTAIN = re.compile(r"\b(?:maybe|might|may|perhaps|possibly|i guess|not sure)\b", re.I)
+_HISTORICAL = re.compile(r"\b(?:used to|previously|in the past|before)\b", re.I)
+_CHANGE = re.compile(r"\b(?:stopped|no longer|not anymore|anymore|switching from|used to)\b", re.I)
+_FUTURE = re.compile(
+    r"\b(?:plan(?:ning)? to|going to|will|might|may|next (?:week|month|year)|later|someday)\b",
+    re.I,
+)
+_CURRENT = re.compile(r"\b(?:now|currently|right now|recently|today)\b", re.I)
+_NEGATION = re.compile(r"\b(?:don't|do not|doesn't|does not|never|no longer|stopped)\b", re.I)
+
+
+def _normalize_input(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("’", "'").replace("“", '"').replace("”", '"')
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def _locate(raw_text: str, evidence: str) -> tuple[int | None, int | None]:
+    start = raw_text.casefold().find(evidence.casefold())
+    return (start, start + len(evidence)) if start >= 0 else (None, None)
+
+
+def _expand_switch_statement(sentence: str, raw_text: str) -> list[_Clause] | None:
+    match = re.fullmatch(
+        r"i(?:'m| am) switching from (?P<old>.+?) to (?P<new>.+?)[.!?]?",
+        sentence.strip(),
+        re.I,
+    )
+    if not match:
+        return None
+    start, end = _locate(raw_text, sentence)
+    return [
+        _Clause(f"I used to focus on {match.group('old')}", sentence, start, end),
+        _Clause(f"I am switching to {match.group('new')}", sentence, start, end),
+    ]
+
+
+def _candidate_clauses(text: str) -> list[_Clause]:
+    clauses: list[_Clause] = []
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        expanded = _expand_switch_statement(sentence, text)
+        if expanded is not None:
+            clauses.extend(expanded)
             continue
 
-        # Split on sentence boundaries so distinct thoughts become distinct memories.
-        sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", para)
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if sentence:
-                segments.append(sentence)
+        contrast_parts = re.split(r"\s*,?\s*\b(?:but|however)\b\s*", sentence, flags=re.I)
+        for part in contrast_parts:
+            atomic_parts = re.split(
+                r"\s*;\s*|\s+\band\b\s+(?=(?:i\b|i'm\b|i am\b|i've\b|i'll\b|i'd\b|my\b))",
+                part,
+                flags=re.I,
+            )
+            for atomic in atomic_parts:
+                atomic = atomic.strip(" ,")
+                if not atomic:
+                    continue
+                if len(atomic) > MAX_CLAUSE_CHARS:
+                    atomic = atomic[:MAX_CLAUSE_CHARS].rstrip()
+                start, end = _locate(text, atomic)
+                clauses.append(_Clause(atomic, atomic, start, end))
+    return clauses
 
-    return segments
+
+def _is_memory_worthy(text: str, suggested_type: MemoryType | None) -> bool:
+    stripped = text.strip()
+    if not stripped or _FILLER.fullmatch(stripped) or _CASUAL.fullmatch(stripped):
+        return False
+    if len(stripped.strip(".!? ")) < 4:
+        return False
+    return suggested_type is not None or bool(_PERSONAL_SIGNAL.search(stripped))
 
 
-# ---------------------------------------------------------------------------
-# Extractor Implementation
-# ---------------------------------------------------------------------------
+def _classify(text: str, suggested_type: MemoryType | None) -> MemoryType:
+    if suggested_type is not None:
+        return suggested_type
+    for memory_type, pattern in _TYPE_RULES:
+        if pattern.search(text):
+            return memory_type
+    return MemoryType.CONTEXT
+
+
+def _temporal_analysis(text: str) -> tuple[CandidateTemporalStatus, str | None, CandidateAction]:
+    hint_match: re.Match[str] | None
+    if (hint_match := _HISTORICAL.search(text)) is not None:
+        return CandidateTemporalStatus.HISTORICAL, hint_match.group(0), CandidateAction.SUPERSEDE
+    if (hint_match := _CHANGE.search(text)) is not None:
+        return CandidateTemporalStatus.HISTORICAL, hint_match.group(0), CandidateAction.SUPERSEDE
+    if (hint_match := _FUTURE.search(text)) is not None:
+        return CandidateTemporalStatus.FUTURE, hint_match.group(0), CandidateAction.ADD
+    if (hint_match := _CURRENT.search(text)) is not None:
+        return CandidateTemporalStatus.CURRENT, hint_match.group(0), CandidateAction.ADD
+    return CandidateTemporalStatus.CURRENT, None, CandidateAction.ADD
+
+
+def _canonicalize(text: str) -> str:
+    value = text.strip().rstrip(".!?").strip()
+    value = re.sub(r"^also\s+", "", value, flags=re.I)
+    value = re.sub(r"^i also\s+", "I ", value, flags=re.I)
+    value = re.sub(
+        r"^keep (?:your )?answers (?:short|concise)$",
+        "User prefers concise answers",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(r"^maybe\s+i(?:'ll| will)\s+", "User may ", value, flags=re.I)
+    value = re.sub(r"^now\s+i(?:'m| am)\s+", "User is now ", value, flags=re.I)
+    replacements = (
+        (r"^i don't\s+", "User does not "),
+        (r"^i do not\s+", "User does not "),
+        (r"^i prefer\s+", "User prefers "),
+        (r"^i use\s+", "User uses "),
+        (r"^i want\s+", "User wants "),
+        (r"^i plan\s+", "User plans "),
+        (r"^i like\s+", "User likes "),
+        (r"^i work\s+", "User works "),
+        (r"^i think\s+", "User thinks "),
+        (r"^i(?:'m| am)\s+", "User is "),
+        (r"^i(?:'ve| have)\s+", "User has "),
+        (r"^i(?:'ll| will)\s+", "User will "),
+        (r"^i(?:'d| would)\s+", "User would "),
+        (r"^i\s+", "User "),
+        (r"^my\s+", "User's "),
+    )
+    for pattern, replacement in replacements:
+        updated = re.sub(pattern, replacement, value, count=1, flags=re.I)
+        if updated != value:
+            value = updated
+            break
+    value = re.sub(r"\bshort answers\b", "concise answers", value, flags=re.I)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _confidence(text: str) -> float:
+    score = 0.88
+    if _UNCERTAIN.search(text):
+        score -= 0.32
+    if re.search(r"\b(?:think|guess|could)\b", text, re.I):
+        score -= 0.12
+    if re.search(r"\b(?:always|never|definitely|absolutely|certainly)\b", text, re.I):
+        score += 0.07
+    return round(min(1.0, max(0.0, score)), 2)
+
+
+def _importance(memory_type: MemoryType, text: str) -> float:
+    scores = {
+        MemoryType.GOAL: 0.85,
+        MemoryType.PROJECT: 0.85,
+        MemoryType.PREFERENCE: 0.8,
+        MemoryType.PROCEDURE: 0.75,
+        MemoryType.SKILL: 0.7,
+        MemoryType.FACT: 0.65,
+        MemoryType.RELATIONSHIP: 0.65,
+        MemoryType.OPINION: 0.55,
+        MemoryType.CONTEXT: 0.5,
+        MemoryType.TEMPORAL: 0.4,
+    }
+    score = scores[memory_type]
+    if re.search(r"\b(?:today|tomorrow|this week|right now)\b", text, re.I):
+        score -= 0.15
+    return round(min(1.0, max(0.0, score)), 2)
+
+
+def _dedup_key(candidate: CandidateMemory) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", candidate.content.casefold()).strip()
 
 
 class RuleBasedMemoryExtractor:
-    """Phase 1 memory extractor using heuristic rules.
+    """Side-effect-free deterministic baseline implementing MemoryExtractor."""
 
-    Implements the MemoryExtractor protocol.
-    """
-
-    def __init__(
-        self,
-        *,
-        min_confidence: float = 0.3,
-        default_importance: float = 0.5,
-        default_confidence: float = 0.7,
-    ) -> None:
+    def __init__(self, *, min_confidence: float = 0.3, max_candidates: int = MAX_CANDIDATES) -> None:
         self._min_confidence = min_confidence
-        self._default_importance = default_importance
-        self._default_confidence = default_confidence
+        self._max_candidates = max_candidates
 
     async def extract(
         self,
@@ -137,79 +254,56 @@ class RuleBasedMemoryExtractor:
         source_uri: str | None = None,
         suggested_type: MemoryType | None = None,
         tags: list[str] | None = None,
-    ) -> list[ExtractedMemory]:
-        """Extract discrete memories from raw text."""
+        source_role: SourceRole = SourceRole.USER,
+        confirmed_user_information: bool = False,
+    ) -> list[CandidateMemory]:
         if not text or not text.strip():
             return []
+        if source_role != SourceRole.USER and not confirmed_user_information:
+            return []
 
-        segments = _segment_text(text)
-        memories: list[ExtractedMemory] = []
+        normalized = _normalize_input(text[:MAX_INPUT_CHARS])
+        input_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        candidates: list[CandidateMemory] = []
+        seen: set[str] = set()
 
-        for segment in segments:
-            segment = segment.strip()
-
-            # Skip non-memory-worthy segments
-            if len(segment) < MIN_SEGMENT_LENGTH:
+        for clause in _candidate_clauses(normalized):
+            if len(candidates) >= self._max_candidates:
+                break
+            if not _is_memory_worthy(clause.text, suggested_type):
                 continue
-            if any(p.match(segment) for p in SKIP_PATTERNS):
-                continue
-
-            # Classify type
-            memory_type, importance_delta = self._classify_type(segment, suggested_type)
-
-            # Score confidence
-            confidence = self._score_confidence(segment)
-
-            # Score importance
-            importance = min(1.0, max(0.0, self._default_importance + importance_delta))
-
-            # Skip low-confidence extractions
+            memory_type = _classify(clause.text, suggested_type)
+            temporal_status, temporal_hint, action_hint = _temporal_analysis(clause.text)
+            confidence = _confidence(clause.text)
             if confidence < self._min_confidence:
                 continue
-
-            memories.append(
-                ExtractedMemory(
-                    content=segment,
-                    type=memory_type,
-                    confidence=confidence,
-                    importance=importance,
-                    tags=tags or [],
-                )
+            candidate = CandidateMemory(
+                content=_canonicalize(clause.text),
+                memory_type=memory_type,
+                confidence=confidence,
+                importance=_importance(memory_type, clause.text),
+                temporal_status=temporal_status,
+                temporal_hint=temporal_hint,
+                action_hint=action_hint,
+                source_type=source_type,
+                source_uri=source_uri,
+                source_role=source_role,
+                evidence=clause.evidence,
+                evidence_start=clause.start,
+                evidence_end=clause.end,
+                tags=list(tags or []),
+                metadata={
+                    "input_hash": input_hash,
+                    "negated": bool(_NEGATION.search(clause.text)),
+                    "confirmed_user_information": confirmed_user_information,
+                    "input_truncated": len(text) > MAX_INPUT_CHARS,
+                    "extractor": "deterministic-v2",
+                },
             )
+            key = _dedup_key(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
 
-        return memories
-
-    def _classify_type(
-        self, text: str, suggested_type: MemoryType | None
-    ) -> tuple[MemoryType, float]:
-        """Classify a text segment into a memory type.
-
-        Returns (type, importance_delta).
-        """
-        if suggested_type is not None:
-            return suggested_type, 0.0
-
-        best_type = MemoryType.CONTEXT
-        best_importance_delta = 0.0
-
-        for pattern, mem_type, importance_delta in TYPE_PATTERNS:
-            if pattern.search(text):
-                best_type = mem_type
-                best_importance_delta = importance_delta
-                break  # First match wins (patterns are ordered by priority)
-
-        return best_type, best_importance_delta
-
-    def _score_confidence(self, text: str) -> float:
-        """Score confidence of a text segment based on linguistic signals."""
-        confidence = self._default_confidence
-
-        for pattern, boost in CONFIDENCE_BOOSTERS:
-            if pattern.search(text):
-                confidence += boost
-
-        for pattern, dampener in CONFIDENCE_DAMPENERS:
-            if pattern.search(text):
-                confidence += dampener  # dampener is negative
-
-        return min(1.0, max(0.0, confidence))
+        return candidates

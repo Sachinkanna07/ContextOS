@@ -4,6 +4,8 @@ Re-exports the most commonly used types for convenience.
 """
 
 from contextos.core.enums import (
+    CandidateAction,
+    CandidateTemporalStatus,
     EventType,
     MemoryStatus,
     MemoryType,
@@ -11,6 +13,7 @@ from contextos.core.enums import (
     RelationType,
     SecretDetectionMode,
     SecretType,
+    SourceRole,
 )
 from contextos.core.exceptions import (
     ConcurrencyError,
@@ -20,6 +23,7 @@ from contextos.core.exceptions import (
     SecretDetectedError,
 )
 from contextos.core.models import (
+    CandidateMemory,
     CompiledContext,
     CompilationConfig,
     ExtractedMemory,
@@ -38,6 +42,8 @@ from contextos.core.models import (
 
 __all__ = [
     # Enums
+    "CandidateAction",
+    "CandidateTemporalStatus",
     "EventType",
     "MemoryStatus",
     "MemoryType",
@@ -45,6 +51,7 @@ __all__ = [
     "RelationType",
     "SecretDetectionMode",
     "SecretType",
+    "SourceRole",
     # Exceptions
     "ConcurrencyError",
     "ContextOSError",
@@ -52,6 +59,7 @@ __all__ = [
     "MemoryNotFoundError",
     "SecretDetectedError",
     # Models
+    "CandidateMemory",
     "CompiledContext",
     "CompilationConfig",
     "ExtractedMemory",

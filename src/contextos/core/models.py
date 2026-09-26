@@ -16,15 +16,18 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from contextos.core.enums import (
+    CandidateAction,
+    CandidateTemporalStatus,
     EventType,
     MemoryStatus,
     MemoryType,
     PrivacyLevel,
     RelationType,
     SecretType,
+    SourceRole,
 )
 
 
@@ -318,25 +321,63 @@ class IngestRequest(BaseModel):
     content: str = Field(min_length=1, max_length=100_000)
     source_type: str = Field(default="cli_input")
     source_uri: str | None = None
+    source_role: SourceRole = SourceRole.USER
+    confirmed_user_information: bool = False
     memory_type: MemoryType | None = None
     tags: list[str] = Field(default_factory=list)
     skip_secret_scan: bool = Field(default=False)
 
 
-class ExtractedMemory(BaseModel):
-    """A memory extracted by the memory extractor, before storage."""
+class CandidateMemory(BaseModel):
+    """Unaccepted memory candidate inferred from one raw input."""
 
-    content: str = Field(min_length=1)
-    type: MemoryType = Field(default=MemoryType.CONTEXT)
+    content: str = Field(min_length=1, max_length=10_000)
+    memory_type: MemoryType = Field(default=MemoryType.CONTEXT)
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    temporal_status: CandidateTemporalStatus = CandidateTemporalStatus.UNSPECIFIED
+    temporal_hint: str | None = None
+    action_hint: CandidateAction = CandidateAction.ADD
+    source_type: str = Field(default="cli_input", min_length=1)
+    source_uri: str | None = None
+    source_role: SourceRole = SourceRole.USER
+    evidence: str = Field(min_length=1)
+    evidence_start: int | None = Field(default=None, ge=0)
+    evidence_end: int | None = Field(default=None, ge=0)
     tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("content", "evidence", "source_type")
+    @classmethod
+    def candidate_strings_are_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Candidate text fields cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def evidence_span_is_valid(self) -> CandidateMemory:
+        if (self.evidence_start is None) != (self.evidence_end is None):
+            raise ValueError("Evidence start and end must be provided together")
+        if self.evidence_start is not None and self.evidence_end <= self.evidence_start:
+            raise ValueError("Evidence end must be greater than evidence start")
+        return self
+
+    @property
+    def type(self) -> MemoryType:
+        """Compatibility accessor for callers that previously used ExtractedMemory.type."""
+        return self.memory_type
+
+
+# Compatibility name for integrations written against the initial baseline.
+ExtractedMemory = CandidateMemory
 
 
 class IngestResult(BaseModel):
     """Result of an ingestion operation."""
 
     event_id: UUID
+    candidates: list[CandidateMemory] = Field(default_factory=list)
     memories_created: list[UUID] = Field(default_factory=list)
     memories_updated: list[UUID] = Field(default_factory=list)
     memories_merged: list[UUID] = Field(default_factory=list)
