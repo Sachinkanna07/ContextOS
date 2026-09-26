@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from contextos import __version__
@@ -75,6 +76,15 @@ def create_app() -> FastAPI:
         return response
 
     # --- Exception Handlers ---
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(request: Request, exc: RequestValidationError):
+        """Return validation structure without echoing attacker-controlled values."""
+        safe_errors = [
+            {key: value for key, value in error.items() if key not in {"input", "ctx"}}
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": safe_errors})
 
     @app.exception_handler(MemoryNotFoundError)
     async def memory_not_found_handler(request: Request, exc: MemoryNotFoundError):

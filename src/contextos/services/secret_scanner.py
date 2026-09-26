@@ -1,15 +1,4 @@
-"""Pattern-based secret scanner for ContextOS.
-
-Detects credentials, API keys, private keys, passwords, and high-entropy
-strings in text. This is the Phase 1 implementation — pattern-based only.
-
-Design decisions:
-- Patterns are ordered from most specific to most general.
-- Each pattern has a confidence score — API key patterns are high confidence,
-  high-entropy detection is lower confidence.
-- The scanner never modifies the input. Redaction is a separate method.
-- False positives are tracked and tunable via confidence thresholds.
-"""
+"""Local structured credential detection and overlap-safe redaction."""
 
 from __future__ import annotations
 
@@ -23,162 +12,101 @@ from contextos.core.models import ScanResult, SecretMatch
 
 @dataclass(frozen=True, slots=True)
 class SecretPattern:
-    """A regex pattern for detecting a specific type of secret."""
-
     secret_type: SecretType
     pattern: re.Pattern[str]
     confidence: float
-    description: str
+    detector: str
+    secret_group: int = 0
 
 
-# ---------------------------------------------------------------------------
-# Pattern Definitions
-# ---------------------------------------------------------------------------
+def _pattern(
+    secret_type: SecretType,
+    expression: str,
+    confidence: float,
+    detector: str,
+    *,
+    flags: int = 0,
+    secret_group: int = 0,
+) -> SecretPattern:
+    return SecretPattern(
+        secret_type, re.compile(expression, flags), confidence, detector, secret_group
+    )
 
-# Order: most specific first, most general last.
+
 SECRET_PATTERNS: list[SecretPattern] = [
-    # AWS
-    SecretPattern(
-        secret_type=SecretType.AWS_ACCESS_KEY,
-        pattern=re.compile(r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])"),
-        confidence=0.98,
-        description="AWS Access Key ID",
-    ),
-    SecretPattern(
-        secret_type=SecretType.AWS_SECRET_KEY,
-        pattern=re.compile(r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])"),
-        confidence=0.6,  # Lower confidence — 40-char base64 is common
-        description="Potential AWS Secret Access Key",
-    ),
-    # GitHub
-    SecretPattern(
-        secret_type=SecretType.GITHUB_TOKEN,
-        pattern=re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}"),
-        confidence=0.97,
-        description="GitHub Personal Access Token",
-    ),
-    # OpenAI
-    SecretPattern(
-        secret_type=SecretType.OPENAI_API_KEY,
-        pattern=re.compile(r"sk-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}"),
-        confidence=0.99,
-        description="OpenAI API Key (legacy format)",
-    ),
-    SecretPattern(
-        secret_type=SecretType.OPENAI_API_KEY,
-        pattern=re.compile(r"sk-proj-[A-Za-z0-9_-]{40,}"),
-        confidence=0.97,
-        description="OpenAI API Key (project format)",
-    ),
-    # Anthropic
-    SecretPattern(
-        secret_type=SecretType.ANTHROPIC_API_KEY,
-        pattern=re.compile(r"sk-ant-[A-Za-z0-9_-]{40,}"),
-        confidence=0.98,
-        description="Anthropic API Key",
-    ),
-    # Google
-    SecretPattern(
-        secret_type=SecretType.GOOGLE_API_KEY,
-        pattern=re.compile(r"AIza[0-9A-Za-z_-]{35}"),
-        confidence=0.95,
-        description="Google API Key",
-    ),
-    # Slack
-    SecretPattern(
-        secret_type=SecretType.SLACK_TOKEN,
-        pattern=re.compile(r"xox[baprs]-[0-9a-zA-Z]{10,}(?:-[0-9a-zA-Z]{10,})*"),
-        confidence=0.95,
-        description="Slack Token",
-    ),
-    # Stripe
-    SecretPattern(
-        secret_type=SecretType.STRIPE_KEY,
-        pattern=re.compile(r"(?:sk|pk)_(?:test|live)_[0-9a-zA-Z]{24,}"),
-        confidence=0.97,
-        description="Stripe API Key",
-    ),
-    # Private keys (PEM format)
-    SecretPattern(
-        secret_type=SecretType.PRIVATE_KEY,
-        pattern=re.compile(
-            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
-            r"[\s\S]*?"
-            r"-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
-            re.MULTILINE,
-        ),
-        confidence=0.99,
-        description="PEM Private Key",
-    ),
-    # SSH private key (non-PEM indicators)
-    SecretPattern(
-        secret_type=SecretType.SSH_PRIVATE_KEY,
-        pattern=re.compile(r"-----BEGIN OPENSSH PRIVATE KEY-----"),
-        confidence=0.99,
-        description="OpenSSH Private Key",
-    ),
-    # JWT (3 base64url segments separated by dots)
-    SecretPattern(
-        secret_type=SecretType.JWT,
-        pattern=re.compile(
-            r"eyJ[A-Za-z0-9_-]{10,}\."
-            r"eyJ[A-Za-z0-9_-]{10,}\."
-            r"[A-Za-z0-9_-]{10,}"
-        ),
-        confidence=0.90,
-        description="JSON Web Token",
-    ),
-    # Connection strings with passwords
-    SecretPattern(
-        secret_type=SecretType.CONNECTION_STRING,
-        pattern=re.compile(
-            r"(?:mongodb|postgres|postgresql|mysql|redis|amqp)"
-            r"(?:\+[a-z]+)?://"
-            r"[^:]+:[^@]+@",
-            re.IGNORECASE,
-        ),
-        confidence=0.92,
-        description="Connection string with embedded credentials",
-    ),
-    # Generic API key assignments
-    SecretPattern(
-        secret_type=SecretType.GENERIC_API_KEY,
-        pattern=re.compile(
-            r"""(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token)"""
-            r"""[\s]*[=:]\s*['\"]?([A-Za-z0-9_\-./+=]{16,})['\"]?""",
-            re.IGNORECASE,
-        ),
-        confidence=0.80,
-        description="Generic API key assignment",
-    ),
-    # Password assignments
-    SecretPattern(
-        secret_type=SecretType.PASSWORD,
-        pattern=re.compile(
-            r"""(?:password|passwd|pwd|pass)[\s]*[=:]\s*['\"]?(\S{6,})['\"]?""",
-            re.IGNORECASE,
-        ),
-        confidence=0.75,
-        description="Password assignment",
-    ),
+    _pattern(SecretType.PRIVATE_KEY,
+             r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?"
+             r"-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+             0.99, "private-key-block", flags=re.MULTILINE),
+    _pattern(SecretType.AUTHORIZATION_HEADER,
+             r"\bauthorization\s*:\s*(?:bearer|basic)\s+([^\s,;]+)",
+             0.99, "authorization-header", flags=re.I, secret_group=1),
+    _pattern(SecretType.AWS_ACCESS_KEY, r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])",
+             0.98, "aws-access-key"),
+    _pattern(SecretType.GITHUB_TOKEN, r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}",
+             0.98, "github-token"),
+    _pattern(SecretType.OPENAI_API_KEY,
+             r"sk-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}",
+             0.99, "openai-legacy-key"),
+    _pattern(SecretType.OPENAI_API_KEY, r"sk-proj-[A-Za-z0-9_-]{40,}",
+             0.98, "openai-project-key"),
+    _pattern(SecretType.ANTHROPIC_API_KEY, r"sk-ant-[A-Za-z0-9_-]{40,}",
+             0.98, "anthropic-key"),
+    _pattern(SecretType.GOOGLE_API_KEY, r"AIza[0-9A-Za-z_-]{35}",
+             0.96, "google-api-key"),
+    _pattern(SecretType.SLACK_TOKEN,
+             r"xox[baprs]-[0-9a-zA-Z]{10,}(?:-[0-9a-zA-Z]{10,})*",
+             0.96, "slack-token"),
+    _pattern(SecretType.STRIPE_KEY, r"(?:sk|pk)_(?:test|live)_[0-9a-zA-Z]{24,}",
+             0.98, "stripe-key"),
+    _pattern(SecretType.JWT,
+             r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+             0.96, "jwt-token"),
+    _pattern(SecretType.CONNECTION_STRING,
+             r"(?:mongodb|postgres|postgresql|mysql|redis|amqp)(?:\+[a-z]+)?://"
+             r"[^\s:/]+:[^\s@]+@[^\s]+",
+             0.96, "credential-connection-string", flags=re.I),
+    _pattern(SecretType.CONNECTION_STRING,
+             r"(?:https?|ftp)://[^\s:/]+:[^\s@]+@[^\s/]+(?:/[^\s]*)?",
+             0.94, "credential-url-userinfo", flags=re.I),
+    _pattern(SecretType.BEARER_TOKEN, r"\bbearer\s+([A-Za-z0-9._~+/=-]{12,})",
+             0.94, "bearer-token", flags=re.I, secret_group=1),
+    _pattern(SecretType.GENERIC_API_KEY,
+             r"\b(?:api[_ -]?key|apikey|api[_ -]?secret)\b\s*(?:is|=|:)\s*"
+             r"['\"]?([A-Za-z0-9_./+=-]{11,}[A-Za-z0-9_+=-])['\"]?",
+             0.92, "credential-assignment", flags=re.I, secret_group=1),
+    _pattern(SecretType.ACCESS_TOKEN,
+             r"\b(?:access[_ -]?token|refresh[_ -]?token)\b\s*(?:is|=|:)\s*"
+             r"['\"]?([A-Za-z0-9_./+=-]{12,})['\"]?",
+             0.93, "token-assignment", flags=re.I, secret_group=1),
+    _pattern(SecretType.SESSION_COOKIE,
+             r"\b(?:session(?:[_ -]?(?:id|token))?|cookie)\b\s*(?:is|=|:)\s*"
+             r"['\"]?([A-Za-z0-9_./+=-]{12,})['\"]?",
+             0.91, "session-cookie", flags=re.I, secret_group=1),
+    _pattern(SecretType.PASSWORD,
+             r"\b(?:password|passwd|pwd|pass)\b\s*(?:is|=|:)\s*"
+             r"['\"]?([^\s'\"]{6,})['\"]?",
+             0.91, "password-assignment", flags=re.I, secret_group=1),
+    _pattern(SecretType.OTP,
+             r"\b(?:otp|one[ -]?time (?:password|code)|verification code|pin)\b"
+             r"\s*(?:is|=|:)\s*([0-9]{4,8})\b",
+             0.95, "contextual-otp", flags=re.I, secret_group=1),
+    _pattern(SecretType.AWS_SECRET_KEY,
+             r"\baws[_ -]?secret(?:[_ -]?access)?[_ -]?key\b\s*(?:is|=|:)\s*"
+             r"['\"]?([A-Za-z0-9/+=]{40})['\"]?",
+             0.96, "aws-secret-key", flags=re.I, secret_group=1),
 ]
 
 
-# ---------------------------------------------------------------------------
-# Entropy Analysis
-# ---------------------------------------------------------------------------
-
-
-def _shannon_entropy(s: str) -> float:
-    """Calculate Shannon entropy of a string in bits per character."""
-    if not s:
+def _shannon_entropy(value: str) -> float:
+    if not value:
         return 0.0
-    freq: dict[str, int] = {}
-    for c in s:
-        freq[c] = freq.get(c, 0) + 1
-    length = len(s)
+    frequencies: dict[str, int] = {}
+    for character in value:
+        frequencies[character] = frequencies.get(character, 0) + 1
+    length = len(value)
     return -sum(
-        (count / length) * math.log2(count / length) for count in freq.values()
+        (count / length) * math.log2(count / length) for count in frequencies.values()
     )
 
 
@@ -188,49 +116,32 @@ def _find_high_entropy_strings(
     max_length: int = 200,
     entropy_threshold: float = 4.5,
 ) -> list[SecretMatch]:
-    """Find high-entropy substrings that might be secrets.
-
-    Splits text on whitespace and common delimiters, then checks
-    each token for high entropy. This catches secrets that don't match
-    any specific pattern.
-    """
+    """Optional advisory detector; disabled by default to control false positives."""
     matches: list[SecretMatch] = []
-    # Split on whitespace and common separators, keeping track of positions
-    token_pattern = re.compile(r"[A-Za-z0-9+/=_\-]{" + str(min_length) + "," + str(max_length) + "}")
-
-    for m in token_pattern.finditer(text):
-        token = m.group()
-        entropy = _shannon_entropy(token)
+    token_pattern = re.compile(
+        r"[A-Za-z0-9+/=_-]{" + str(min_length) + "," + str(max_length) + "}"
+    )
+    for match in token_pattern.finditer(text):
+        entropy = _shannon_entropy(match.group())
         if entropy >= entropy_threshold:
-            matches.append(
-                SecretMatch(
-                    secret_type=SecretType.HIGH_ENTROPY,
-                    start=m.start(),
-                    end=m.end(),
-                    matched_text=token[:8] + "..." + token[-4:],  # Truncated for safety
-                    confidence=min(0.9, (entropy - entropy_threshold) / 2.0 + 0.5),
-                )
-            )
-
+            matches.append(SecretMatch(
+                secret_type=SecretType.HIGH_ENTROPY,
+                start=match.start(),
+                end=match.end(),
+                matched_text="[REDACTED:high_entropy]",
+                confidence=min(0.89, (entropy - entropy_threshold) / 2.0 + 0.5),
+            ))
     return matches
 
 
-# ---------------------------------------------------------------------------
-# Scanner Implementation
-# ---------------------------------------------------------------------------
-
-
 class PatternSecretScanner:
-    """Phase 1 secret scanner using regex patterns and entropy analysis.
-
-    Implements the SecretScanner protocol.
-    """
+    """Replaceable local scanner implementing the existing SecretScanner protocol."""
 
     def __init__(
         self,
         *,
         min_confidence: float = 0.5,
-        enable_entropy: bool = True,
+        enable_entropy: bool = False,
         entropy_threshold: float = 4.5,
     ) -> None:
         self._min_confidence = min_confidence
@@ -238,85 +149,55 @@ class PatternSecretScanner:
         self._entropy_threshold = entropy_threshold
 
     def scan(self, text: str) -> ScanResult:
-        """Scan text for secrets. Returns ScanResult with all matches."""
         if not text:
             return ScanResult(scanned_length=0)
-
         matches: list[SecretMatch] = []
-
-        # Run pattern-based detection
-        for sp in SECRET_PATTERNS:
-            if sp.confidence < self._min_confidence:
+        for secret_pattern in SECRET_PATTERNS:
+            if secret_pattern.confidence < self._min_confidence:
                 continue
-
-            for m in sp.pattern.finditer(text):
-                matched_text = m.group()
-                # Truncate matched text for safety in logs/results
-                safe_text = matched_text[:8] + "..." if len(matched_text) > 12 else "***"
-
-                matches.append(
-                    SecretMatch(
-                        secret_type=sp.secret_type,
-                        start=m.start(),
-                        end=m.end(),
-                        matched_text=safe_text,
-                        confidence=sp.confidence,
-                    )
-                )
-
-        # Run entropy-based detection
+            for match in secret_pattern.pattern.finditer(text):
+                start, end = match.span(secret_pattern.secret_group)
+                matches.append(SecretMatch(
+                    secret_type=secret_pattern.secret_type,
+                    start=start,
+                    end=end,
+                    matched_text=f"[REDACTED:{secret_pattern.secret_type.value}]",
+                    confidence=secret_pattern.confidence,
+                ))
         if self._enable_entropy:
-            entropy_matches = _find_high_entropy_strings(
+            matches.extend(_find_high_entropy_strings(
                 text, entropy_threshold=self._entropy_threshold
-            )
-            matches.extend(entropy_matches)
-
-        # Deduplicate overlapping matches (keep highest confidence)
+            ))
         matches = self._deduplicate_overlapping(matches)
-
         return ScanResult(
-            has_secrets=len(matches) > 0,
-            matches=matches,
-            scanned_length=len(text),
+            has_secrets=bool(matches), matches=matches, scanned_length=len(text)
         )
 
     def redact(self, text: str) -> tuple[str, ScanResult]:
-        """Scan and redact secrets from text.
-
-        Returns (redacted_text, scan_result).
-        Secrets are replaced with [REDACTED:<type>] placeholders.
-        """
         result = self.scan(text)
-        if not result.has_secrets:
-            return text, result
-
-        # Sort matches by start position, descending, to replace from end
-        sorted_matches = sorted(result.matches, key=lambda m: m.start, reverse=True)
-
         redacted = text
-        for match in sorted_matches:
-            placeholder = f"[REDACTED:{match.secret_type.value}]"
-            redacted = redacted[: match.start] + placeholder + redacted[match.end :]
-
+        for match in sorted(result.matches, key=lambda item: item.start, reverse=True):
+            redacted = (
+                redacted[:match.start]
+                + f"[REDACTED:{match.secret_type.value}]"
+                + redacted[match.end:]
+            )
         return redacted, result
 
     @staticmethod
     def _deduplicate_overlapping(matches: list[SecretMatch]) -> list[SecretMatch]:
-        """Remove overlapping matches, keeping the one with highest confidence."""
-        if len(matches) <= 1:
-            return matches
-
-        # Sort by start position
-        sorted_matches = sorted(matches, key=lambda m: (m.start, -m.confidence))
-        result: list[SecretMatch] = [sorted_matches[0]]
-
-        for current in sorted_matches[1:]:
-            prev = result[-1]
-            if current.start < prev.end:
-                # Overlapping — keep the one with higher confidence
-                if current.confidence > prev.confidence:
-                    result[-1] = current
-            else:
-                result.append(current)
-
-        return result
+        selected: list[SecretMatch] = []
+        for current in sorted(matches, key=lambda item: (item.start, -item.confidence, -item.end)):
+            if selected and current.start < selected[-1].end:
+                previous = selected[-1]
+                winner = current if current.confidence > previous.confidence else previous
+                selected[-1] = SecretMatch(
+                    secret_type=winner.secret_type,
+                    start=min(previous.start, current.start),
+                    end=max(previous.end, current.end),
+                    matched_text=f"[REDACTED:{winner.secret_type.value}]",
+                    confidence=max(previous.confidence, current.confidence),
+                )
+                continue
+            selected.append(current)
+        return selected

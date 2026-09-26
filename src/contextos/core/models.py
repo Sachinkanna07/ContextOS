@@ -24,10 +24,14 @@ from contextos.core.enums import (
     EventType,
     MemoryStatus,
     MemoryType,
+    PrivacyClassification,
+    PrivacyDecision,
     PrivacyLevel,
+    PrivacySeverity,
     RelationType,
     SecretType,
     SourceRole,
+    SourceTrust,
 )
 
 
@@ -233,6 +237,44 @@ class ScanResult(BaseModel):
         return list({m.secret_type for m in self.matches})
 
 
+class PrivacyFinding(BaseModel):
+    """Secret finding safe to persist; it never contains the matched value."""
+
+    category: SecretType
+    severity: PrivacySeverity
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    detector: str = Field(min_length=1)
+    location: str = Field(default="content", min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+    safe_preview: str = Field(min_length=1)
+    fingerprint: str = Field(min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def finding_span_is_valid(self) -> PrivacyFinding:
+        if self.end <= self.start:
+            raise ValueError("Finding end must be greater than start")
+        return self
+
+
+class PrivacyAssessment(BaseModel):
+    """Deterministic privacy decision containing only sanitized data."""
+
+    decision: PrivacyDecision
+    classification: PrivacyClassification
+    source_trust: SourceTrust
+    findings: list[PrivacyFinding] = Field(default_factory=list)
+    sanitized_text: str = ""
+    scanned_length: int = Field(ge=0)
+    input_hash: str = Field(min_length=64, max_length=64)
+    untrusted_instruction_detected: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def has_findings(self) -> bool:
+        return bool(self.findings)
+
+
 # ---------------------------------------------------------------------------
 # Retrieval Results
 # ---------------------------------------------------------------------------
@@ -318,13 +360,15 @@ class CompiledContext(BaseModel):
 class IngestRequest(BaseModel):
     """Request to ingest content into ContextOS."""
 
-    content: str = Field(min_length=1, max_length=100_000)
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    content: str = Field(min_length=1, repr=False)
     source_type: str = Field(default="cli_input")
-    source_uri: str | None = None
+    source_uri: str | None = Field(default=None, repr=False)
     source_role: SourceRole = SourceRole.USER
     confirmed_user_information: bool = False
     memory_type: MemoryType | None = None
-    tags: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list, repr=False)
     skip_secret_scan: bool = Field(default=False)
 
 
@@ -346,6 +390,7 @@ class CandidateMemory(BaseModel):
     evidence_end: int | None = Field(default=None, ge=0)
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    privacy_assessment: PrivacyAssessment | None = None
 
     @field_validator("content", "evidence", "source_type")
     @classmethod
@@ -378,6 +423,8 @@ class IngestResult(BaseModel):
 
     event_id: UUID
     candidates: list[CandidateMemory] = Field(default_factory=list)
+    privacy_assessment: PrivacyAssessment | None = None
+    blocked_candidate_assessments: list[PrivacyAssessment] = Field(default_factory=list)
     memories_created: list[UUID] = Field(default_factory=list)
     memories_updated: list[UUID] = Field(default_factory=list)
     memories_merged: list[UUID] = Field(default_factory=list)

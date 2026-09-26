@@ -251,3 +251,38 @@ class SecretType(StrEnum):
     GOOGLE_API_KEY = "google_api_key"
     SLACK_TOKEN = "slack_token"
     STRIPE_KEY = "stripe_key"
+    BEARER_TOKEN = "bearer_token"
+    AUTHORIZATION_HEADER = "authorization_header"
+    OTP = "otp"
+    SESSION_COOKIE = "session_cookie"
+    ACCESS_TOKEN = "access_token"
+
+
+class PrivacySeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class PrivacyDecision(StrEnum):
+    ALLOW = "allow"
+    REDACT = "redact"
+    REJECT = "reject"
+    QUARANTINE = "quarantine"
+
+
+class PrivacyClassification(StrEnum):
+    SAFE = "safe"
+    SENSITIVE = "sensitive"
+    SECRET = "secret"
+    BLOCKED = "blocked"
+
+
+class SourceTrust(StrEnum):
+    DIRECT_USER = "direct_user"
+    LOCAL_TRUSTED_CONNECTOR = "local_trusted_connector"
+    EXTERNAL_WEBPAGE = "external_webpage"
+    IMPORTED_DOCUMENT = "imported_document"
+    TOOL_OUTPUT = "tool_output"
+    MODEL_OUTPUT = "model_output"
