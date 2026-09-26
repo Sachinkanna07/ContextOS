@@ -118,6 +118,22 @@ class MemoryType(StrEnum):
     """General contextual information that doesn't fit other categories."""
 
 
+class RetrievalMode(StrEnum):
+    """Available retrieval strategies."""
+
+    LEXICAL = "lexical"
+    DENSE = "dense"
+    HYBRID = "hybrid"
+
+
+class TemporalScope(StrEnum):
+    """Lifecycle window considered by a retrieval query."""
+
+    CURRENT = "current"
+    HISTORICAL = "historical"
+    ALL = "all"
+
+
 class CandidateTemporalStatus(StrEnum):
     """Temporal interpretation inferred during candidate extraction."""
 

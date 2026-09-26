@@ -30,6 +30,7 @@ from contextos.core.models import (
     MemoryUpdate,
     RawEvent,
     RetrievalConfig,
+    RetrievalQuery,
     RetrievalResult,
     ScanResult,
     ScoredMemory,
@@ -132,6 +133,10 @@ class VectorStore(Protocol):
 
     async def count(self) -> int: ...
 
+    async def rebuild(
+        self, ids: list[str], vectors: list[list[float]], metadata: list[dict[str, Any]]
+    ) -> None: ...
+
 
 @runtime_checkable
 class LexicalIndex(Protocol):
@@ -207,7 +212,7 @@ class RetrievalService(Protocol):
     """Multi-strategy retrieval with fusion, reranking, and dedup."""
 
     async def retrieve(
-        self, query: str, config: RetrievalConfig | None = None
+        self, query: str | RetrievalQuery, config: RetrievalConfig | None = None
     ) -> RetrievalResult: ...
 
 

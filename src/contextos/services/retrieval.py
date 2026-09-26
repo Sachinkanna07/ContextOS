@@ -1,47 +1,32 @@
-"""Hybrid retrieval engine for ContextOS.
-
-Implements multi-strategy retrieval with Reciprocal Rank Fusion (RRF).
-Phase 1: Vector + BM25, fused with RRF. No reranker.
-
-The retrieval engine is the core intelligence of the system — it determines
-which memories are relevant to a given query.
-"""
+"""Side-effect-free lexical, dense, and hybrid memory retrieval."""
 
 from __future__ import annotations
 
-import logging
 import time
+from collections.abc import Sequence
 from uuid import UUID
 
-from contextos.core.enums import MemoryStatus
+from contextos.core.enums import MemoryStatus, RetrievalMode, TemporalScope
 from contextos.core.models import (
+    LexicalResult,
     Memory,
-    MemoryFilters,
     RetrievalConfig,
+    RetrievalQuery,
     RetrievalResult,
     RetrievalTrace,
     ScoredMemory,
     StageTrace,
     VectorResult,
-    LexicalResult,
 )
-from contextos.core.protocols import (
-    EmbeddingService,
-    LexicalIndex,
-    MemoryRepository,
-    VectorStore,
-)
-
-logger = logging.getLogger(__name__)
-
-# Default retrieval config
-DEFAULT_CONFIG = RetrievalConfig()
+from contextos.core.protocols import EmbeddingService, LexicalIndex, MemoryRepository, VectorStore
+from contextos.services.retrieval_index import RetrievalIndexSynchronizer
 
 
 class HybridRetrievalEngine:
-    """Multi-strategy retrieval with RRF fusion.
+    """Retrieve with BM25, cosine similarity, or Reciprocal Rank Fusion.
 
-    Implements the RetrievalService protocol.
+    RRF combines ranks rather than adding incomparable BM25 and cosine scores.
+    A bounded metadata factor can increase the relevance score by at most 5%.
     """
 
     def __init__(
@@ -51,247 +36,224 @@ class HybridRetrievalEngine:
         vector_store: VectorStore,
         lexical_index: LexicalIndex,
         embedding_service: EmbeddingService,
+        index_synchronizer: RetrievalIndexSynchronizer | None = None,
     ) -> None:
         self._memory_repo = memory_repo
         self._vector_store = vector_store
         self._lexical_index = lexical_index
         self._embedding_service = embedding_service
+        self._index_synchronizer = index_synchronizer
 
     async def retrieve(
-        self, query: str, config: RetrievalConfig | None = None
-    ) -> RetrievalResult:
-        """Execute hybrid retrieval: vector + BM25 → RRF fusion → dedup."""
-        cfg = config or DEFAULT_CONFIG
-        trace_stages: list[StageTrace] = []
-        t0 = time.perf_counter()
-
-        # --- Stage 1: Vector Search ---
-        t_vec = time.perf_counter()
-        vector_results = await self._vector_search(query, cfg.vector_top_k)
-        vec_latency = (time.perf_counter() - t_vec) * 1000
-        trace_stages.append(StageTrace(
-            stage_name="vector_search",
-            input_count=1,
-            output_count=len(vector_results),
-            latency_ms=vec_latency,
-            metadata={"top_k": cfg.vector_top_k},
-        ))
-
-        # --- Stage 2: BM25 Search ---
-        t_bm25 = time.perf_counter()
-        bm25_results = await self._bm25_search(query, cfg.bm25_top_k)
-        bm25_latency = (time.perf_counter() - t_bm25) * 1000
-        trace_stages.append(StageTrace(
-            stage_name="bm25_search",
-            input_count=1,
-            output_count=len(bm25_results),
-            latency_ms=bm25_latency,
-            metadata={"top_k": cfg.bm25_top_k},
-        ))
-
-        # --- Stage 3: RRF Fusion ---
-        t_fuse = time.perf_counter()
-        fused = self._rrf_fuse(vector_results, bm25_results, cfg.rrf_k)
-        fuse_latency = (time.perf_counter() - t_fuse) * 1000
-        trace_stages.append(StageTrace(
-            stage_name="rrf_fusion",
-            input_count=len(vector_results) + len(bm25_results),
-            output_count=len(fused),
-            latency_ms=fuse_latency,
-            metadata={"rrf_k": cfg.rrf_k},
-        ))
-
-        # --- Stage 4: Resolve memories from IDs ---
-        t_resolve = time.perf_counter()
-        scored_memories = await self._resolve_memories(fused, vector_results, bm25_results, cfg)
-        resolve_latency = (time.perf_counter() - t_resolve) * 1000
-        trace_stages.append(StageTrace(
-            stage_name="memory_resolution",
-            input_count=len(fused),
-            output_count=len(scored_memories),
-            latency_ms=resolve_latency,
-        ))
-
-        # --- Stage 5: Deduplication ---
-        t_dedup = time.perf_counter()
-        deduped = self._deduplicate(scored_memories)
-        dedup_latency = (time.perf_counter() - t_dedup) * 1000
-        trace_stages.append(StageTrace(
-            stage_name="deduplication",
-            input_count=len(scored_memories),
-            output_count=len(deduped),
-            latency_ms=dedup_latency,
-            metadata={"removed": len(scored_memories) - len(deduped)},
-        ))
-
-        # Apply max_results limit
-        final = deduped[: cfg.max_results]
-
-        # Filter by min_score
-        if cfg.min_score > 0:
-            final = [sm for sm in final if sm.final_score >= cfg.min_score]
-
-        total_latency = (time.perf_counter() - t0) * 1000
-
-        # Build strategy_results for tracing
-        strategy_results: dict[str, list[ScoredMemory]] = {}
-        vec_scored = [sm for sm in scored_memories if sm.vector_score is not None]
-        bm25_scored = [sm for sm in scored_memories if sm.bm25_score is not None]
-        if vec_scored:
-            strategy_results["vector"] = vec_scored
-        if bm25_scored:
-            strategy_results["bm25"] = bm25_scored
-
-        return RetrievalResult(
-            query=query,
-            memories=final,
-            strategy_results=strategy_results,
-            trace=RetrievalTrace(
-                stages=trace_stages,
-                total_latency_ms=total_latency,
-                total_candidates=len(fused),
-                total_results=len(final),
-            ),
-        )
-
-    # --- Internal Methods ---
-
-    async def _vector_search(
-        self, query: str, top_k: int
-    ) -> list[tuple[str, float]]:
-        """Run vector similarity search. Returns list of (memory_id, score)."""
-        try:
-            query_embedding = await self._embedding_service.embed_query(query)
-            results: list[VectorResult] = await self._vector_store.search(
-                vector=query_embedding, top_k=top_k
-            )
-            return [(r.id, r.score) for r in results]
-        except Exception:
-            logger.warning("Vector search failed, returning empty results", exc_info=True)
-            return []
-
-    async def _bm25_search(
-        self, query: str, top_k: int
-    ) -> list[tuple[str, float]]:
-        """Run BM25 lexical search. Returns list of (memory_id, score)."""
-        try:
-            results: list[LexicalResult] = await self._lexical_index.search(
-                query=query, top_k=top_k
-            )
-            return [(r.id, r.score) for r in results]
-        except Exception:
-            logger.warning("BM25 search failed, returning empty results", exc_info=True)
-            return []
-
-    @staticmethod
-    def _rrf_fuse(
-        vector_results: list[tuple[str, float]],
-        bm25_results: list[tuple[str, float]],
-        k: int = 60,
-    ) -> list[tuple[str, float]]:
-        """Fuse results using Reciprocal Rank Fusion.
-
-        RRF_score(d) = Σ 1 / (k + rank_i(d))
-
-        where rank_i(d) is the 1-based rank of document d in strategy i.
-        Documents not present in a strategy's results are treated as having
-        infinite rank (contributing 0 to the sum).
-        """
-        scores: dict[str, float] = {}
-
-        for rank, (doc_id, _score) in enumerate(vector_results, start=1):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
-
-        for rank, (doc_id, _score) in enumerate(bm25_results, start=1):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
-
-        # Sort by RRF score descending
-        fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        return fused
-
-    async def _resolve_memories(
         self,
-        fused: list[tuple[str, float]],
-        vector_results: list[tuple[str, float]],
-        bm25_results: list[tuple[str, float]],
-        config: RetrievalConfig,
-    ) -> list[ScoredMemory]:
-        """Resolve memory IDs to full Memory objects with scores."""
-        # Build score lookup maps
-        vec_scores = {doc_id: score for doc_id, score in vector_results}
-        bm25_scores = {doc_id: score for doc_id, score in bm25_results}
+        query: str | RetrievalQuery,
+        config: RetrievalConfig | None = None,
+    ) -> RetrievalResult:
+        request = self._coerce_query(query, config)
+        started = time.perf_counter()
+        stages: list[StageTrace] = []
 
-        scored_memories: list[ScoredMemory] = []
-
-        for rank, (doc_id, rrf_score) in enumerate(fused, start=1):
-            try:
-                memory = await self._memory_repo.get(UUID(doc_id))
-            except (ValueError, Exception):
-                logger.warning("Failed to resolve memory ID: %s", doc_id)
-                continue
-
-            if memory is None:
-                continue
-
-            # Filter by status
-            if not self._should_include(memory, config):
-                continue
-
-            scored_memories.append(ScoredMemory(
-                memory=memory,
-                final_score=rrf_score,
-                vector_score=vec_scores.get(doc_id),
-                bm25_score=bm25_scores.get(doc_id),
-                rrf_rank=rank,
+        if self._index_synchronizer is not None:
+            sync_started = time.perf_counter()
+            rebuilt = await self._index_synchronizer.ensure_current()
+            stages.append(self._stage(
+                "index_sync", 0, 0, sync_started, {"rebuilt": rebuilt}
             ))
 
-            # Update access tracking
-            await self._memory_repo.update_access(memory.id)
+        corpus_size = max(
+            await self._lexical_index.count(),
+            await self._vector_store.count(),
+        )
+        candidate_limit = max(corpus_size, request.k)
+        lexical: list[LexicalResult] = []
+        dense: list[VectorResult] = []
 
-        return scored_memories
+        if request.mode in {RetrievalMode.LEXICAL, RetrievalMode.HYBRID}:
+            stage_started = time.perf_counter()
+            lexical = await self._lexical_index.search(request.text, candidate_limit)
+            stages.append(self._stage(
+                "lexical_search", 1, len(lexical), stage_started, {"top_k": candidate_limit}
+            ))
+
+        if request.mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+            stage_started = time.perf_counter()
+            vector = await self._embedding_service.embed_query(request.text)
+            dense = await self._vector_store.search(vector, candidate_limit)
+            stages.append(self._stage(
+                "dense_search", 1, len(dense), stage_started, {"top_k": candidate_limit}
+            ))
+
+        resolution_started = time.perf_counter()
+        ids = {item.id for item in lexical} | {item.id for item in dense}
+        memories = await self._eligible_memories(ids, request)
+        lexical = [item for item in lexical if item.id in memories]
+        dense = [item for item in dense if item.id in memories]
+        stages.append(self._stage(
+            "eligibility_filter",
+            len(ids),
+            len(memories),
+            resolution_started,
+            {"temporal_scope": request.temporal_scope.value},
+        ))
+
+        rank_started = time.perf_counter()
+        scored = self._rank(request, memories, lexical, dense, rrf_k=(config.rrf_k if config else 60))
+        minimum = config.min_score if config else 0.0
+        scored = [item for item in scored if item.final_score >= minimum][:request.k]
+        for rank, item in enumerate(scored, 1):
+            item.rank = rank
+        stages.append(self._stage(
+            "fusion_rerank",
+            len(set(item.id for item in lexical) | set(item.id for item in dense)),
+            len(scored),
+            rank_started,
+            {"mode": request.mode.value, "method": "rrf", "metadata_cap": 0.05},
+        ))
+
+        total_latency = (time.perf_counter() - started) * 1000
+        trace = RetrievalTrace(
+            stages=stages if request.include_trace else [],
+            total_latency_ms=total_latency,
+            total_candidates=len(ids),
+            total_results=len(scored),
+        )
+        strategy_results = {
+            name: [item for item in scored if name in item.retrieval_sources]
+            for name in ("lexical", "dense")
+            if any(name in item.retrieval_sources for item in scored)
+        }
+        return RetrievalResult(
+            query=request.text,
+            memories=scored,
+            strategy_results=strategy_results,
+            trace=trace,
+        )
 
     @staticmethod
-    def _should_include(memory: Memory, config: RetrievalConfig) -> bool:
-        """Check if a memory should be included based on its status and config."""
-        if memory.status == MemoryStatus.ACTIVE:
-            return True
-        if memory.status == MemoryStatus.SUPERSEDED and config.include_superseded:
-            return True
-        if memory.status == MemoryStatus.CONTRADICTED and config.include_contradicted:
-            return True
-        if memory.status == MemoryStatus.EXPIRED and config.include_expired:
-            return True
-        return False
+    def _coerce_query(
+        query: str | RetrievalQuery, config: RetrievalConfig | None
+    ) -> RetrievalQuery:
+        if isinstance(query, RetrievalQuery):
+            return query
+        if config is None:
+            return RetrievalQuery(text=query)
+        statuses = {MemoryStatus.ACTIVE}
+        if config.include_superseded:
+            statuses.add(MemoryStatus.SUPERSEDED)
+        if config.include_contradicted:
+            statuses.add(MemoryStatus.CONTRADICTED)
+        if config.include_expired:
+            statuses.add(MemoryStatus.EXPIRED)
+        return RetrievalQuery(text=query, k=config.max_results, allowed_statuses=statuses)
+
+    async def _eligible_memories(
+        self, ids: set[str], request: RetrievalQuery
+    ) -> dict[str, Memory]:
+        eligible: dict[str, Memory] = {}
+        for raw_id in sorted(ids):
+            try:
+                memory = await self._memory_repo.get(UUID(raw_id))
+            except ValueError:
+                continue
+            if memory is not None and self._eligible(memory, request):
+                eligible[raw_id] = memory
+        return eligible
 
     @staticmethod
-    def _deduplicate(memories: list[ScoredMemory]) -> list[ScoredMemory]:
-        """Remove exact duplicates (by content_hash) from results.
+    def _eligible(memory: Memory, query: RetrievalQuery) -> bool:
+        if memory.status in {MemoryStatus.DELETED, MemoryStatus.PURGED, MemoryStatus.MERGED}:
+            return False
+        if query.allowed_statuses is not None:
+            if memory.status not in query.allowed_statuses:
+                return False
+        else:
+            statuses = {
+                TemporalScope.CURRENT: {MemoryStatus.ACTIVE},
+                TemporalScope.HISTORICAL: {
+                    MemoryStatus.HISTORICAL,
+                    MemoryStatus.SUPERSEDED,
+                },
+                TemporalScope.ALL: {
+                    MemoryStatus.ACTIVE,
+                    MemoryStatus.HISTORICAL,
+                    MemoryStatus.SUPERSEDED,
+                    MemoryStatus.CONTRADICTED,
+                    MemoryStatus.EXPIRED,
+                },
+            }[query.temporal_scope]
+            if memory.status not in statuses:
+                return False
+        if query.allowed_memory_types and memory.type not in query.allowed_memory_types:
+            return False
+        if query.source_types and memory.source_type not in query.source_types:
+            return False
+        if query.tags and not query.tags.issubset(memory.tags):
+            return False
+        if query.created_after and memory.created_at < query.created_after:
+            return False
+        if query.created_before and memory.created_at > query.created_before:
+            return False
+        if query.min_confidence is not None and memory.confidence < query.min_confidence:
+            return False
+        return not (
+            query.min_importance is not None and memory.importance < query.min_importance
+        )
 
-        Keeps the higher-ranked (earlier in list) memory.
-        Also removes superseded memories when their successor is present.
-        """
-        seen_hashes: set[str] = set()
-        seen_ids: set[UUID] = set()
-        result: list[ScoredMemory] = []
+    @staticmethod
+    def _rank(
+        query: RetrievalQuery,
+        memories: dict[str, Memory],
+        lexical: Sequence[LexicalResult],
+        dense: Sequence[VectorResult],
+        *,
+        rrf_k: int,
+    ) -> list[ScoredMemory]:
+        lexical_ranks = {item.id: rank for rank, item in enumerate(lexical, 1)}
+        dense_ranks = {item.id: rank for rank, item in enumerate(dense, 1)}
+        lexical_scores = {item.id: item.score for item in lexical}
+        dense_scores = {item.id: item.score for item in dense}
+        identifiers = set(lexical_ranks) | set(dense_ranks)
+        results: list[ScoredMemory] = []
+        for identifier in identifiers:
+            sources: list[str] = []
+            base_score = 0.0
+            if identifier in lexical_ranks:
+                sources.append("lexical")
+                base_score += 1.0 / (rrf_k + lexical_ranks[identifier])
+            if identifier in dense_ranks:
+                sources.append("dense")
+                base_score += 1.0 / (rrf_k + dense_ranks[identifier])
+            memory = memories[identifier]
+            adjustment = (
+                base_score * 0.05 * ((memory.confidence + memory.importance) / 2.0)
+                if query.apply_metadata_rerank
+                else 0.0
+            )
+            results.append(ScoredMemory(
+                memory=memory,
+                final_score=base_score + adjustment,
+                vector_score=dense_scores.get(identifier),
+                bm25_score=lexical_scores.get(identifier),
+                lexical_rank=lexical_ranks.get(identifier),
+                dense_rank=dense_ranks.get(identifier),
+                metadata_adjustment=adjustment,
+                retrieval_sources=sources,
+            ))
+        results.sort(key=lambda item: (-item.final_score, str(item.memory.id)))
+        return results
 
-        # First pass: collect all IDs present
-        present_ids = {sm.memory.id for sm in memories}
-
-        for sm in memories:
-            # Skip if we've seen this content hash
-            if sm.memory.content_hash in seen_hashes:
-                continue
-
-            # Skip if this memory is superseded and its successor is in results
-            if (
-                sm.memory.status == MemoryStatus.SUPERSEDED
-                and sm.memory.superseded_by is not None
-                and sm.memory.superseded_by in present_ids
-            ):
-                continue
-
-            seen_hashes.add(sm.memory.content_hash)
-            seen_ids.add(sm.memory.id)
-            result.append(sm)
-
-        return result
+    @staticmethod
+    def _stage(
+        name: str,
+        input_count: int,
+        output_count: int,
+        started: float,
+        metadata: dict[str, object] | None = None,
+    ) -> StageTrace:
+        return StageTrace(
+            stage_name=name,
+            input_count=input_count,
+            output_count=output_count,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            metadata=metadata or {},
+        )

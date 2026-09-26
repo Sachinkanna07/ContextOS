@@ -43,10 +43,18 @@ class InMemoryVectorStore:
         """Add vectors to the store."""
         if not ids:
             return
+        if len(ids) != len(vectors) or len(ids) != len(metadata):
+            raise ValueError("ids, vectors, and metadata must have equal lengths")
 
         new_vectors = np.array(vectors, dtype=np.float32)
         if new_vectors.ndim == 1:
             new_vectors = new_vectors.reshape(1, -1)
+        if new_vectors.ndim != 2 or new_vectors.shape[1] != self._dimension:
+            raise ValueError(
+                f"Expected vectors with dimension {self._dimension}, got shape {new_vectors.shape}"
+            )
+        if not np.isfinite(new_vectors).all():
+            raise ValueError("Vectors must contain only finite values")
 
         # Normalize for cosine similarity
         norms = np.linalg.norm(new_vectors, axis=1, keepdims=True)
@@ -76,15 +84,25 @@ class InMemoryVectorStore:
             return []
 
         query = np.array(vector, dtype=np.float32)
+        if query.ndim != 1 or query.shape[0] != self._dimension:
+            raise ValueError(
+                f"Expected query dimension {self._dimension}, got shape {query.shape}"
+            )
+        if not np.isfinite(query).all():
+            raise ValueError("Query vector must contain only finite values")
         norm = np.linalg.norm(query)
-        if norm > 0:
-            query = query / norm
+        if norm == 0:
+            return []
+        query = query / norm
 
         # Cosine similarity (vectors are pre-normalized)
         similarities = self._vectors @ query
 
         # Build results
-        indices = np.argsort(similarities)[::-1]
+        indices = sorted(
+            range(len(self._ids)),
+            key=lambda index: (-float(similarities[index]), self._ids[index]),
+        )
         results: list[VectorResult] = []
 
         for idx in indices:
@@ -95,7 +113,7 @@ class InMemoryVectorStore:
             score = float(similarities[idx])
 
             if score <= 0:
-                break
+                continue
 
             # Apply filters
             if filters:
@@ -122,3 +140,16 @@ class InMemoryVectorStore:
 
     async def count(self) -> int:
         return len(self._ids)
+
+    async def rebuild(
+        self,
+        ids: list[str],
+        vectors: list[list[float]],
+        metadata: list[dict[str, Any]],
+    ) -> None:
+        """Replace the complete index after validating the new corpus."""
+        replacement = InMemoryVectorStore(self._dimension)
+        await replacement.add(ids, vectors, metadata)
+        self._ids = replacement._ids
+        self._vectors = replacement._vectors
+        self._metadata = replacement._metadata

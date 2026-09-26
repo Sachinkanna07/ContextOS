@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from contextos.api.server import get_service
 from contextos.core.models import (
     CompiledContext,
     CompilationConfig,
     RetrievalConfig,
+    RetrievalQuery,
     RetrievalResult,
 )
 
@@ -18,8 +19,16 @@ router = APIRouter(tags=["retrieval"])
 
 class RetrieveRequest(BaseModel):
     """Request body for retrieval."""
-    query: str = Field(min_length=1)
+
+    query: str | RetrievalQuery
     config: RetrievalConfig | None = None
+
+    @field_validator("query")
+    @classmethod
+    def nonblank_string_query(cls, value: str | RetrievalQuery) -> str | RetrievalQuery:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("Query cannot be blank")
+        return value
 
 
 class CompileRequest(BaseModel):

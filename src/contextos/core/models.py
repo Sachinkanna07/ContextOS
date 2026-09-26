@@ -29,9 +29,11 @@ from contextos.core.enums import (
     PrivacyLevel,
     PrivacySeverity,
     RelationType,
+    RetrievalMode,
     SecretType,
     SourceRole,
     SourceTrust,
+    TemporalScope,
 )
 
 
@@ -289,6 +291,11 @@ class ScoredMemory(BaseModel):
     bm25_score: float | None = None
     rrf_rank: int = Field(default=0, ge=0)
     rerank_score: float | None = None
+    rank: int = Field(default=0, ge=0)
+    lexical_rank: int | None = Field(default=None, ge=1)
+    dense_rank: int | None = Field(default=None, ge=1)
+    metadata_adjustment: float = Field(default=0.0, ge=0.0)
+    retrieval_sources: list[str] = Field(default_factory=list)
 
 
 class StageTrace(BaseModel):
@@ -319,6 +326,54 @@ class RetrievalResult(BaseModel):
     memories: list[ScoredMemory] = Field(default_factory=list)
     strategy_results: dict[str, list[ScoredMemory]] = Field(default_factory=dict)
     trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
+
+
+class RetrievalQuery(BaseModel):
+    """Validated, side-effect-free retrieval request."""
+
+    text: str = Field(min_length=1, max_length=10_000)
+    k: int = Field(default=10, ge=1, le=200)
+    mode: RetrievalMode = RetrievalMode.HYBRID
+    temporal_scope: TemporalScope = TemporalScope.CURRENT
+    allowed_memory_types: set[MemoryType] | None = None
+    allowed_statuses: set[MemoryStatus] | None = None
+    source_types: set[str] | None = None
+    tags: set[str] | None = None
+    created_after: datetime | None = None
+    created_before: datetime | None = None
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_importance: float | None = Field(default=None, ge=0.0, le=1.0)
+    include_trace: bool = True
+    apply_metadata_rerank: bool = True
+
+    @field_validator("text")
+    @classmethod
+    def nonblank_query(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Retrieval query cannot be blank")
+        return value
+
+    @field_validator("created_after", "created_before")
+    @classmethod
+    def aware_retrieval_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("Retrieval timestamps must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def valid_time_range(self) -> RetrievalQuery:
+        if self.created_after and self.created_before and self.created_after > self.created_before:
+            raise ValueError("created_after must not be later than created_before")
+        forbidden = {
+            MemoryStatus.CANDIDATE,
+            MemoryStatus.DELETED,
+            MemoryStatus.PURGED,
+            MemoryStatus.MERGED,
+        }
+        if self.allowed_statuses and self.allowed_statuses & forbidden:
+            raise ValueError("Unaccepted or deleted memories are not retrievable")
+        return self
 
 
 # ---------------------------------------------------------------------------

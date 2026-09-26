@@ -73,8 +73,16 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     bm25_index = BM25Index()
     services["bm25_index"] = bm25_index
 
-    # --- Rebuild indices from existing memories ---
-    await _rebuild_indices(memory_repo, embedding_service, vector_store, bm25_index)
+    # --- Explicit retrieval index synchronization ---
+    from contextos.services.retrieval_index import RetrievalIndexSynchronizer
+
+    retrieval_index = RetrievalIndexSynchronizer(
+        memory_repo=memory_repo,
+        embedding_service=embedding_service,
+        vector_store=vector_store,
+        lexical_index=bm25_index,
+    )
+    services["retrieval_index"] = retrieval_index
 
     # --- Secret Scanner ---
     from contextos.services.secret_scanner import PatternSecretScanner
@@ -127,6 +135,7 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
         vector_store=vector_store,
         lexical_index=bm25_index,
         embedding_service=embedding_service,
+        index_synchronizer=retrieval_index,
     )
     services["retrieval"] = retrieval
 
@@ -138,38 +147,3 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
 
     logger.info("All services wired successfully")
     return services
-
-
-async def _rebuild_indices(
-    memory_repo,
-    embedding_service,
-    vector_store,
-    bm25_index,
-) -> None:
-    """Rebuild in-memory indices from existing database memories."""
-    from contextos.core.enums import MemoryStatus
-    from contextos.core.models import MemoryFilters
-
-    filters = MemoryFilters(status=MemoryStatus.ACTIVE, limit=500)
-    memories = await memory_repo.list(filters)
-
-    if not memories:
-        logger.info("No existing memories to index")
-        return
-
-    logger.info("Rebuilding indices for %d memories...", len(memories))
-
-    # Rebuild BM25
-    bm25_docs = {str(m.id): m.content for m in memories}
-    await bm25_index.rebuild(bm25_docs)
-
-    # Rebuild vector index
-    try:
-        texts = [m.content for m in memories]
-        ids = [str(m.id) for m in memories]
-        embeddings = await embedding_service.embed(texts)
-        metadata = [{"type": m.type.value, "status": m.status.value} for m in memories]
-        await vector_store.add(ids=ids, vectors=embeddings, metadata=metadata)
-        logger.info("Vector index rebuilt with %d vectors", len(ids))
-    except Exception:
-        logger.warning("Failed to rebuild vector index, will embed on demand", exc_info=True)
