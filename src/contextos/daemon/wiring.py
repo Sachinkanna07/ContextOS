@@ -42,8 +42,17 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
 
     memory_repo = SqliteMemoryRepository(conn)
     event_repo = SqliteEventRepository(conn)
+    from contextos.storage.relation_repo import SqliteRelationRepository
+    relation_repo = SqliteRelationRepository(conn)
     services["memory_repo"] = memory_repo
     services["event_repo"] = event_repo
+    services["relation_repo"] = relation_repo
+
+    # --- Temporal resolution ---
+    from contextos.services.temporal import TemporalMemoryService
+
+    temporal = TemporalMemoryService(memory_repo)
+    services["temporal"] = temporal
 
     # --- Token Counter ---
     from contextos.services.token_counter import TiktokenCounter

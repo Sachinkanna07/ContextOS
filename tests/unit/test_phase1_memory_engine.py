@@ -12,7 +12,7 @@ from contextos.core.exceptions import (
 )
 from contextos.core.models import Memory, MemoryFilters, MemoryUpdate
 from contextos.services.memory import CoreMemoryService
-from contextos.storage.database import Database
+from contextos.storage.database import SCHEMA_VERSION, Database
 from contextos.storage.memory_repo import SqliteMemoryRepository
 
 
@@ -74,7 +74,7 @@ async def test_persistence_and_initialization_from_empty_directory(tmp_path):
     try:
         assert await service(reopened).get(memory.id) == memory
         cursor = await reopened.connection().execute("SELECT MAX(version) FROM schema_version")
-        assert (await cursor.fetchone())[0] == 1
+        assert (await cursor.fetchone())[0] == SCHEMA_VERSION
     finally:
         await reopened.close()
 

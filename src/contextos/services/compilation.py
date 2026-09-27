@@ -334,7 +334,11 @@ class QueryAwareContextCompiler:
         input_kind: CompilerInputKind,
     ) -> ContextFact:
         memory = scored.memory
-        temporal = self._temporal_status(text, memory.status)
+        temporal = (
+            memory.temporal_status
+            if memory.temporal_status != CandidateTemporalStatus.UNSPECIFIED
+            else self._temporal_status(text, memory.status)
+        )
         event_ids = (
             [memory.provenance_event_id] if memory.provenance_event_id is not None else []
         )

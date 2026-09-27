@@ -37,6 +37,9 @@ from contextos.core.models import (
     ScanResult,
     ScoredMemory,
     StageTrace,
+    TemporalDecision,
+    TemporalResolutionResult,
+    MemorySlot,
     VectorResult,
 )
 
@@ -81,6 +84,14 @@ class MemoryRepository(Protocol):
     async def get_by_hash(self, content_hash: str) -> Memory | None:
         """Find a memory by its content hash. Used for exact dedup."""
         ...
+
+    async def list_by_slot(self, slot_key: str) -> list[Memory]: ...
+
+    async def list_temporal(self, *, limit: int = 500) -> list[Memory]: ...
+
+    async def apply_temporal_decision(
+        self, candidate: Memory, decision: TemporalDecision
+    ) -> TemporalResolutionResult: ...
 
 
 @runtime_checkable
@@ -241,6 +252,19 @@ class TokenAwareOptimizer(Protocol):
         budget: ContextBudget,
         strategy: OptimizationStrategy = OptimizationStrategy.CONTEXTOS,
     ) -> SelectionResult: ...
+
+
+@runtime_checkable
+class TemporalResolver(Protocol):
+    """Resolve accepted candidates into deterministic temporal timelines."""
+
+    async def resolve(self, candidate: Memory) -> TemporalResolutionResult: ...
+
+    async def get_current_state(self, slot: MemorySlot | str) -> list[Memory]: ...
+
+    async def get_history(self, slot: MemorySlot | str) -> list[Memory]: ...
+
+    async def get_previous(self, memory_id: UUID) -> Memory | None: ...
 
 
 # ---------------------------------------------------------------------------

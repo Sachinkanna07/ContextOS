@@ -12,6 +12,7 @@ Storage layers convert to/from these models; business logic operates on them.
 from __future__ import annotations
 
 import hashlib
+from builtins import property as builtin_property
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -39,6 +40,8 @@ from contextos.core.enums import (
     SecretType,
     SourceRole,
     SourceTrust,
+    TemporalOutcome,
+    TemporalPrecision,
     TemporalScope,
 )
 
@@ -69,6 +72,34 @@ def _content_hash(content: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+class MemorySlot(BaseModel):
+    """Inspectable identity for a logical user-memory property and scope."""
+
+    subject: str = Field(default="user", min_length=1)
+    property: str = Field(min_length=1)
+    scope: str = Field(default="global", min_length=1)
+    entity: str | None = None
+    qualifiers: tuple[str, ...] = ()
+
+    @field_validator("subject", "property", "scope", "entity")
+    @classmethod
+    def normalize_component(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = "_".join(value.strip().casefold().split())
+        if not normalized:
+            raise ValueError("Memory slot components cannot be blank")
+        return normalized
+
+    @computed_field  # type: ignore[prop-decorator]
+    @builtin_property
+    def key(self) -> str:
+        parts = [self.subject, self.property, self.scope, self.entity or "-"]
+        if self.qualifiers:
+            parts.append(",".join(sorted(self.qualifiers)))
+        return "/".join(parts)
+
+
 class Memory(BaseModel):
     """A discrete unit of user knowledge extracted from raw input.
 
@@ -93,6 +124,17 @@ class Memory(BaseModel):
     embedding_id: str | None = Field(default=None)
     superseded_by: UUID | None = Field(default=None)
     supersedes: UUID | None = Field(default=None)
+    observed_at: datetime = Field(default_factory=_utcnow)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    temporal_precision: TemporalPrecision = TemporalPrecision.UNKNOWN
+    temporal_status: CandidateTemporalStatus = CandidateTemporalStatus.UNSPECIFIED
+    temporal_expression: str | None = None
+    slot: MemorySlot | None = None
+    uncertain: bool = False
+    negated: bool = False
+    resolution_reason: str | None = None
+    resolution_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     access_count: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -108,12 +150,23 @@ class Memory(BaseModel):
             raise ValueError("Memory content cannot be blank")
         return value
 
-    @field_validator("created_at", "updated_at", "last_accessed_at", "expires_at")
+    @field_validator(
+        "created_at", "updated_at", "last_accessed_at", "expires_at",
+        "observed_at", "valid_from", "valid_to",
+    )
     @classmethod
     def aware_timestamp(cls, value: datetime | None) -> datetime | None:
         if value is not None and value.utcoffset() is None:
             raise ValueError("Memory timestamps must include a timezone")
         return value
+
+    @model_validator(mode="after")
+    def temporal_interval_and_links_are_valid(self) -> Memory:
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValueError("valid_to must not be earlier than valid_from")
+        if self.superseded_by == self.id or self.supersedes == self.id:
+            raise ValueError("A memory cannot supersede itself")
+        return self
 
     def model_post_init(self, _context: Any) -> None:
         """Keep the derived hash consistent with the actual content."""
@@ -183,6 +236,42 @@ class MemoryRelation(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     created_at: datetime = Field(default_factory=_utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def relation_is_not_self_referential(self) -> MemoryRelation:
+        if self.source_memory_id == self.target_memory_id:
+            raise ValueError("A memory relation cannot target itself")
+        return self
+
+
+class TemporalChange(BaseModel):
+    """Value-free lifecycle mutation included in a temporal trace."""
+
+    memory_id: UUID
+    from_status: MemoryStatus | None = None
+    to_status: MemoryStatus
+
+
+class TemporalDecision(BaseModel):
+    """Inspectable resolution plan produced before any database mutation."""
+
+    candidate_id: UUID
+    slot: MemorySlot
+    outcome: TemporalOutcome
+    compared_memory_ids: list[UUID] = Field(default_factory=list)
+    related_memory_id: UUID | None = None
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0)
+    changes: list[TemporalChange] = Field(default_factory=list)
+
+
+class TemporalResolutionResult(BaseModel):
+    """Persisted result of one atomic temporal resolution."""
+
+    decision: TemporalDecision
+    memory: Memory
+    affected_memories: list[Memory] = Field(default_factory=list)
+    relations: list[MemoryRelation] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +656,13 @@ class CandidateMemory(BaseModel):
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
     temporal_status: CandidateTemporalStatus = CandidateTemporalStatus.UNSPECIFIED
     temporal_hint: str | None = None
+    temporal_precision: TemporalPrecision = TemporalPrecision.UNKNOWN
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    observed_at: datetime | None = None
+    slot: MemorySlot | None = None
+    uncertain: bool = False
+    negated: bool = False
     action_hint: CandidateAction = CandidateAction.ADD
     source_type: str = Field(default="cli_input", min_length=1)
     source_uri: str | None = None
@@ -592,6 +688,8 @@ class CandidateMemory(BaseModel):
             raise ValueError("Evidence start and end must be provided together")
         if self.evidence_start is not None and self.evidence_end <= self.evidence_start:
             raise ValueError("Evidence end must be greater than evidence start")
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValueError("valid_to must not be earlier than valid_from")
         return self
 
     @property
@@ -631,7 +729,7 @@ class RetrievalConfig(BaseModel):
     bm25_top_k: int = Field(default=20, ge=1, le=200)
     rrf_k: int = Field(default=60, ge=1)
     include_superseded: bool = False
-    include_contradicted: bool = True
+    include_contradicted: bool = False
     include_expired: bool = False
     max_results: int = Field(default=50, ge=1, le=200)
     min_score: float = Field(default=0.0, ge=0.0)

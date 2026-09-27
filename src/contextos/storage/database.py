@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Schema SQL — Phase 1 initial schema
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -119,6 +119,27 @@ CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_traces_type ON traces(trace_type);
 """
 
+MIGRATION_2_SQL = """
+ALTER TABLE memories ADD COLUMN observed_at TEXT;
+ALTER TABLE memories ADD COLUMN valid_from TEXT;
+ALTER TABLE memories ADD COLUMN valid_to TEXT;
+ALTER TABLE memories ADD COLUMN temporal_precision TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE memories ADD COLUMN temporal_status TEXT NOT NULL DEFAULT 'unspecified';
+ALTER TABLE memories ADD COLUMN temporal_expression TEXT;
+ALTER TABLE memories ADD COLUMN slot_json TEXT;
+ALTER TABLE memories ADD COLUMN slot_key TEXT;
+ALTER TABLE memories ADD COLUMN uncertain INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE memories ADD COLUMN negated INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE memories ADD COLUMN resolution_reason TEXT;
+ALTER TABLE memories ADD COLUMN resolution_confidence REAL;
+UPDATE memories SET observed_at = created_at WHERE observed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_slot_key ON memories(slot_key);
+CREATE INDEX IF NOT EXISTS idx_memories_temporal_status ON memories(temporal_status);
+CREATE INDEX IF NOT EXISTS idx_memories_validity ON memories(valid_from, valid_to);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_relations_unique
+ON memory_relations(source_memory_id, target_memory_id, relation_type);
+"""
+
 
 class Database:
     """Manages the SQLite database connection and schema.
@@ -169,7 +190,7 @@ class Database:
         logger.info("Database initialized at %s", self._db_path)
 
     async def _apply_schema(self) -> None:
-        """Apply schema if not already applied."""
+        """Apply the initial schema and ordered incremental migrations."""
         assert self._connection is not None
 
         # Check if schema_version table exists
@@ -178,8 +199,18 @@ class Database:
         )
         table_exists = await cursor.fetchone()
 
-        if table_exists:
-            # Check current version
+        if not table_exists:
+            try:
+                await self._connection.executescript(
+                    "BEGIN IMMEDIATE;\n" + SCHEMA_SQL
+                    + "\nINSERT INTO schema_version (version, description) "
+                    "VALUES (1, 'Initial schema');\nCOMMIT;"
+                )
+            except Exception as exc:
+                await self._connection.rollback()
+                raise MigrationError("Failed to initialize database schema") from exc
+            current_version = 1
+        else:
             cursor = await self._connection.execute(
                 "SELECT MAX(version) FROM schema_version"
             )
@@ -190,22 +221,22 @@ class Database:
                 raise MigrationError(
                     f"Database schema version {current_version} is newer than supported {SCHEMA_VERSION}"
                 )
-            if current_version == SCHEMA_VERSION:
-                logger.debug("Schema is up to date (version %d)", current_version)
-                return
+        if current_version < 2:
+            try:
+                await self._connection.executescript(
+                    "BEGIN IMMEDIATE;\n" + MIGRATION_2_SQL
+                    + "\nINSERT INTO schema_version (version, description) "
+                    "VALUES (2, 'Temporal memory and resolution metadata');\nCOMMIT;"
+                )
+            except Exception as exc:
+                await self._connection.rollback()
+                raise MigrationError("Failed to apply schema migration 2") from exc
+            current_version = 2
 
-        # Apply schema
-        # executescript commits any pending transaction first. Embed the entire
-        # migration and its version marker in one explicit SQLite transaction.
-        try:
-            await self._connection.executescript(
-                "BEGIN IMMEDIATE;\n" + SCHEMA_SQL +
-                "\nINSERT INTO schema_version (version, description) "
-                "VALUES (1, 'Initial schema');\nCOMMIT;"
+        if current_version != SCHEMA_VERSION:
+            raise MigrationError(
+                f"Database schema version {current_version} is unsupported"
             )
-        except Exception as exc:
-            await self._connection.rollback()
-            raise MigrationError("Failed to initialize database schema") from exc
         logger.info("Applied schema version %d", SCHEMA_VERSION)
 
     def connection(self) -> aiosqlite.Connection:

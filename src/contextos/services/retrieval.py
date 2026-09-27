@@ -6,7 +6,12 @@ import time
 from collections.abc import Sequence
 from uuid import UUID
 
-from contextos.core.enums import MemoryStatus, RetrievalMode, TemporalScope
+from contextos.core.enums import (
+    CandidateTemporalStatus,
+    MemoryStatus,
+    RetrievalMode,
+    TemporalScope,
+)
 from contextos.core.models import (
     LexicalResult,
     Memory,
@@ -182,6 +187,20 @@ class HybridRetrievalEngine:
                 },
             }[query.temporal_scope]
             if memory.status not in statuses:
+                return False
+        if query.allowed_statuses is None:
+            if (
+                query.temporal_scope == TemporalScope.CURRENT
+                and memory.temporal_status in {
+                    CandidateTemporalStatus.FUTURE,
+                    CandidateTemporalStatus.HISTORICAL,
+                }
+            ):
+                return False
+            if (
+                query.temporal_scope == TemporalScope.HISTORICAL
+                and memory.temporal_status == CandidateTemporalStatus.FUTURE
+            ):
                 return False
         if query.allowed_memory_types and memory.type not in query.allowed_memory_types:
             return False

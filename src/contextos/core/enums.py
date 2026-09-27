@@ -199,6 +199,29 @@ class CandidateTemporalStatus(StrEnum):
     UNSPECIFIED = "unspecified"
 
 
+class TemporalPrecision(StrEnum):
+    """Precision of a claimed effective time without false timestamp accuracy."""
+
+    EXACT = "exact"
+    DATE = "date"
+    MONTH = "month"
+    YEAR = "year"
+    RELATIVE = "relative"
+    UNKNOWN = "unknown"
+
+
+class TemporalOutcome(StrEnum):
+    """Deterministic result of resolving an accepted memory candidate."""
+
+    ADD_NEW = "add_new"
+    DUPLICATE = "duplicate"
+    COEXIST = "coexist"
+    SUPERSEDE = "supersede"
+    CONTRADICT = "contradict"
+    CORRECT = "correct"
+    NO_CHANGE = "no_change"
+
+
 class CandidateAction(StrEnum):
     """Non-binding hint for a later candidate validation stage."""
 
@@ -278,6 +301,15 @@ class RelationType(StrEnum):
 
     CONTRADICTS = "contradicts"
     """Source memory conflicts with target memory."""
+
+    CORRECTS = "corrects"
+    """Source memory explicitly corrects target memory."""
+
+    COEXISTS_WITH = "coexists_with"
+    """Memories share a property but apply to compatible scopes."""
+
+    DUPLICATE_OF = "duplicate_of"
+    """Source candidate repeats an existing memory without changing state."""
 
     SUPPORTS = "supports"
     """Source memory reinforces target memory."""

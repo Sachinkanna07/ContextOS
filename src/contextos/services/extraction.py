@@ -285,6 +285,8 @@ class RuleBasedMemoryExtractor:
                 temporal_status=temporal_status,
                 temporal_hint=temporal_hint,
                 action_hint=action_hint,
+                uncertain=bool(_UNCERTAIN.search(clause.text)),
+                negated=bool(_NEGATION.search(clause.text)),
                 source_type=source_type,
                 source_uri=source_uri,
                 source_role=source_role,
