@@ -146,9 +146,9 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     services["retrieval"] = retrieval
 
     # --- Context Compiler ---
-    from contextos.services.compilation import GreedyContextCompiler
+    from contextos.services.compilation import QueryAwareContextCompiler
 
-    compiler = GreedyContextCompiler(token_counter=token_counter)
+    compiler = QueryAwareContextCompiler(token_counter=token_counter)
     services["compilation"] = compiler
 
     logger.info("All services wired successfully")

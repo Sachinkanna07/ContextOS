@@ -157,6 +157,39 @@ class ExclusionReason(StrEnum):
     REDUNDANT = "redundant"
 
 
+class CompilationStrategy(StrEnum):
+    """Representation strategies used after memory selection."""
+
+    RAW_CONCAT = "raw_concat"
+    DEDUP_ONLY = "dedup_only"
+    CONTEXTOS_COMPILER = "contextos_compiler"
+
+
+class CompressionLevel(StrEnum):
+    """Amount of deterministic, extractive fact reduction."""
+
+    NONE = "none"
+    LIGHT = "light"
+    AGGRESSIVE = "aggressive"
+
+
+class FactExclusionReason(StrEnum):
+    """Why a supported source fact was not emitted."""
+
+    BUDGET = "budget"
+    DUPLICATE = "duplicate"
+    EMPTY = "empty"
+    PRIVACY_RESTRICTED = "privacy_restricted"
+    QUERY_IRRELEVANT = "query_irrelevant"
+
+
+class CompilerInputKind(StrEnum):
+    """How a memory reached the fact compiler."""
+
+    NORMAL_SELECTED = "normal_selected"
+    OVERSIZED_RESCUE = "oversized_rescue"
+
+
 class CandidateTemporalStatus(StrEnum):
     """Temporal interpretation inferred during candidate extraction."""
 

@@ -11,6 +11,7 @@ from contextos.core.enums import (
     ExclusionReason,
     MemoryStatus,
     OptimizationStrategy,
+    PrivacyLevel,
 )
 from contextos.core.models import (
     CandidateDecision,
@@ -140,6 +141,7 @@ class MemoryContextOptimizer:
         overhead_tokens = len(selected) * budget.overhead_per_memory
         total_tokens = content_tokens + overhead_tokens
         remaining = budget.available_tokens - total_tokens
+        rescue_candidates = self._compiler_rescue_candidates(prepared, selected)
         decisions = [self._decision(candidate, budget) for candidate in prepared]
         latency_ms = (time.perf_counter() - started) * 1000
         utilization = (
@@ -152,6 +154,7 @@ class MemoryContextOptimizer:
             candidate_count=len(candidates),
             eligible_count=len(eligible),
             selected_count=len(selected),
+            compiler_rescue_candidate_count=len(rescue_candidates),
             budget_tokens=budget.max_tokens,
             reserved_tokens=budget.reserved_tokens,
             available_tokens=budget.available_tokens,
@@ -163,6 +166,9 @@ class MemoryContextOptimizer:
         return SelectionResult(
             strategy=strategy,
             selected_memories=[candidate.scored for candidate in selected],
+            compiler_rescue_candidates=[
+                candidate.scored for candidate in rescue_candidates
+            ],
             total_tokens=total_tokens,
             content_tokens=content_tokens,
             overhead_tokens=overhead_tokens,
@@ -171,6 +177,28 @@ class MemoryContextOptimizer:
             utilization=utilization,
             trace=trace,
         )
+
+    def _compiler_rescue_candidates(
+        self,
+        candidates: list[_Candidate],
+        selected: list[_Candidate],
+    ) -> list[_Candidate]:
+        """Expose only eligible whole-memory rejects for extractive compilation."""
+        rescued: list[_Candidate] = []
+        for candidate in candidates:
+            if candidate.exclusion_reason != ExclusionReason.OVERSIZED:
+                continue
+            if candidate.normalized_relevance < self.minimum_relative_relevance:
+                continue
+            if candidate.scored.memory.status not in _VALID_STATUSES:
+                continue
+            if candidate.scored.memory.privacy_level == PrivacyLevel.RESTRICTED:
+                continue
+            redundancy, _ = self._maximum_redundancy(candidate, selected)
+            if redundancy >= self.redundancy_threshold:
+                continue
+            rescued.append(candidate)
+        return sorted(rescued, key=self._input_order)
 
     def _prepare(
         self, candidates: list[ScoredMemory], budget: ContextBudget

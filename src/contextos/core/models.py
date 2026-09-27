@@ -21,6 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 from contextos.core.enums import (
     CandidateAction,
     CandidateTemporalStatus,
+    CompilationStrategy,
+    CompilerInputKind,
+    CompressionLevel,
     ExclusionReason,
     EventType,
     MemoryStatus,
@@ -30,6 +33,7 @@ from contextos.core.enums import (
     PrivacyDecision,
     PrivacyLevel,
     PrivacySeverity,
+    FactExclusionReason,
     RelationType,
     RetrievalMode,
     SecretType,
@@ -430,6 +434,7 @@ class OptimizationTrace(BaseModel):
     candidate_count: int = Field(ge=0)
     eligible_count: int = Field(ge=0)
     selected_count: int = Field(ge=0)
+    compiler_rescue_candidate_count: int = Field(default=0, ge=0)
     budget_tokens: int = Field(ge=0)
     reserved_tokens: int = Field(ge=0)
     available_tokens: int = Field(ge=0)
@@ -444,6 +449,7 @@ class SelectionResult(BaseModel):
 
     strategy: OptimizationStrategy
     selected_memories: list[ScoredMemory] = Field(default_factory=list)
+    compiler_rescue_candidates: list[ScoredMemory] = Field(default_factory=list)
     total_tokens: int = Field(ge=0)
     content_tokens: int = Field(ge=0)
     overhead_tokens: int = Field(ge=0)
@@ -465,8 +471,46 @@ class CompilationTrace(BaseModel):
     memories_considered: int = 0
     memories_included: int = 0
     memories_excluded: int = 0
+    normal_selected_inputs: int = Field(default=0, ge=0)
+    oversized_rescue_inputs: int = Field(default=0, ge=0)
+    rescued_facts_included: int = Field(default=0, ge=0)
     value_densities: dict[str, float] = Field(default_factory=dict)
+    facts_created: int = Field(default=0, ge=0)
+    facts_included: int = Field(default=0, ge=0)
+    facts_excluded: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    provenance_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
     total_latency_ms: float = 0.0
+
+
+class ContextFact(BaseModel):
+    """Fact-level compiler IR with complete source attribution."""
+
+    fact_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    source_memory_ids: list[UUID] = Field(min_length=1)
+    input_kind: CompilerInputKind = CompilerInputKind.NORMAL_SELECTED
+    provenance_event_ids: list[UUID] = Field(default_factory=list)
+    memory_type: MemoryType
+    temporal_status: CandidateTemporalStatus = CandidateTemporalStatus.UNSPECIFIED
+    confidence: float = Field(ge=0.0, le=1.0)
+    importance: float = Field(ge=0.0, le=1.0)
+    negated: bool = False
+    uncertain: bool = False
+    causal: bool = False
+    query_relevance: float = Field(default=0.0, ge=0.0, le=1.0)
+    token_cost: int = Field(default=0, ge=0)
+
+
+class ExcludedContextFact(BaseModel):
+    """Supported fact omitted from serialization with an explicit reason."""
+
+    fact_id: str
+    source_memory_ids: list[UUID] = Field(min_length=1)
+    input_kind: CompilerInputKind = CompilerInputKind.NORMAL_SELECTED
+    reason: FactExclusionReason
+    token_cost: int = Field(default=0, ge=0)
 
 
 class CompiledContext(BaseModel):
@@ -481,6 +525,16 @@ class CompiledContext(BaseModel):
     memories_excluded: int = Field(ge=0)
     compression_ratio: float = Field(ge=0.0)
     included_memory_ids: list[UUID] = Field(default_factory=list)
+    included_fact_ids: list[str] = Field(default_factory=list)
+    facts: list[ContextFact] = Field(default_factory=list)
+    excluded_facts: list[ExcludedContextFact] = Field(default_factory=list)
+    provenance_map: dict[str, list[UUID]] = Field(default_factory=dict)
+    input_tokens: int = Field(default=0, ge=0)
+    utilization: float = Field(default=0.0, ge=0.0, le=1.0)
+    unsupported_fact_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    provenance_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
+    strategy: CompilationStrategy = CompilationStrategy.CONTEXTOS_COMPILER
+    compression_level: CompressionLevel = CompressionLevel.LIGHT
     trace: CompilationTrace = Field(default_factory=CompilationTrace)
 
 
@@ -586,8 +640,10 @@ class RetrievalConfig(BaseModel):
 class CompilationConfig(BaseModel):
     """Configuration for context compilation."""
 
-    budget: int = Field(default=4000, ge=100, le=32_000)
-    include_sources: bool = True
+    budget: int = Field(default=4000, ge=0, le=32_000)
+    strategy: CompilationStrategy = CompilationStrategy.CONTEXTOS_COMPILER
+    compression_level: CompressionLevel = CompressionLevel.LIGHT
+    include_sources: bool = False
     include_confidence: bool = False
     format: str = Field(default="text")  # "text" or "json"
 

@@ -225,7 +225,7 @@ class CompilationService(Protocol):
     async def compile(
         self,
         query: str,
-        memories: list[ScoredMemory],
+        memories: list[ScoredMemory] | SelectionResult,
         config: CompilationConfig | None = None,
     ) -> CompiledContext: ...
 

@@ -1,43 +1,87 @@
-"""Context compiler for ContextOS.
-
-Implements budget-constrained context assembly from retrieved memories.
-Phase 1: Greedy knapsack approach — maximizes value_density (score / token_cost).
-
-This is the module that directly impacts token savings — the core value
-proposition of ContextOS.
-"""
+"""Deterministic query-aware compilation of selected memory facts."""
 
 from __future__ import annotations
 
-import logging
+import hashlib
+import json
+import re
 import time
+from collections.abc import Iterable
+from dataclasses import dataclass
+from uuid import UUID
 
-from contextos.core.enums import PrivacyLevel
+from contextos.core.enums import (
+    CandidateTemporalStatus,
+    CompilationStrategy,
+    CompilerInputKind,
+    CompressionLevel,
+    FactExclusionReason,
+    MemoryStatus,
+    PrivacyLevel,
+)
 from contextos.core.models import (
-    CompiledContext,
     CompilationConfig,
     CompilationTrace,
+    CompiledContext,
+    ContextFact,
+    ExcludedContextFact,
     ScoredMemory,
+    SelectionResult,
     StageTrace,
 )
 from contextos.core.protocols import TokenCounter
+from contextos.services.optimization import (
+    information_tokens,
+    redundancy_similarity,
+)
 
-logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG = CompilationConfig()
+_NEGATION = re.compile(
+    r"\b(?:don't|doesn't|do not|does not|did not|never|no longer|not anymore|stopped)\b",
+    re.IGNORECASE,
+)
+_UNCERTAINTY = re.compile(
+    r"\b(?:might|may|maybe|perhaps|possibly|could|uncertain|not sure)\b",
+    re.IGNORECASE,
+)
+_HISTORICAL = re.compile(
+    r"\b(?:previously|before|formerly|historically|used to|during a previous|stopped)\b",
+    re.IGNORECASE,
+)
+_CURRENT = re.compile(r"\b(?:currently|now|today|still)\b", re.IGNORECASE)
+_FUTURE = re.compile(r"\b(?:will|plan to|intends? to|going to|might learn)\b", re.IGNORECASE)
+_CAUSAL = re.compile(
+    r"\b(?:because|due to|caused by|as a result|therefore|so that)\b",
+    re.IGNORECASE,
+)
+_WHY_QUERY = re.compile(r"\b(?:why|reason|cause|because)\b", re.IGNORECASE)
+_CLAUSE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|;\s+|,\s+(?=and\b)")
 
 
-class GreedyContextCompiler:
-    """Phase 1 context compiler using greedy knapsack strategy.
+@dataclass(frozen=True)
+class _CompilerInput:
+    scored: ScoredMemory
+    kind: CompilerInputKind
 
-    Strategy:
-    1. Compute value_density = (retrieval_score * importance * confidence) / token_count
-    2. Sort by value_density descending.
-    3. Greedily add memories until budget is exhausted.
-    4. Format selected memories into a context string.
 
-    Implements the CompilationService protocol.
-    """
+def _compiler_tokens(text: str) -> frozenset[str]:
+    """Compiler-local lexical normalization without changing Phase 5."""
+    return frozenset(
+        "local" if token == "locally" else token
+        for token in information_tokens(text)
+    )
+
+
+def fact_is_supported(fact_text: str, source_text: str) -> bool:
+    """Return whether fact tokens occur in source order without additions."""
+    pattern = r"[a-z0-9]+(?:[+#._-][a-z0-9]+)*"
+    fact_tokens = re.findall(pattern, fact_text.casefold())
+    source_tokens = iter(re.findall(pattern, source_text.casefold()))
+    return all(any(source == token for source in source_tokens) for token in fact_tokens)
+
+
+class QueryAwareContextCompiler:
+    """Extract, merge, order, and serialize source-supported facts."""
 
     def __init__(self, *, token_counter: TokenCounter) -> None:
         self._token_counter = token_counter
@@ -45,200 +89,443 @@ class GreedyContextCompiler:
     async def compile(
         self,
         query: str,
-        memories: list[ScoredMemory],
+        memories: list[ScoredMemory] | SelectionResult,
         config: CompilationConfig | None = None,
     ) -> CompiledContext:
-        """Compile retrieved memories into budget-constrained context."""
-        cfg = config or DEFAULT_CONFIG
-        trace_stages: list[StageTrace] = []
-        t0 = time.perf_counter()
-
-        # --- Stage 1: Privacy Filter ---
-        t_filter = time.perf_counter()
-        filtered = self._privacy_filter(memories)
-        filter_latency = (time.perf_counter() - t_filter) * 1000
-        trace_stages.append(StageTrace(
-            stage_name="privacy_filter",
-            input_count=len(memories),
-            output_count=len(filtered),
-            latency_ms=filter_latency,
-            metadata={"removed": len(memories) - len(filtered)},
-        ))
-
-        # --- Stage 2: Value Density Ranking ---
-        t_rank = time.perf_counter()
-        ranked = self._rank_by_value_density(filtered)
-        rank_latency = (time.perf_counter() - t_rank) * 1000
-
-        value_densities = {
-            str(sm.memory.id): vd for sm, vd in ranked
-        }
-
-        trace_stages.append(StageTrace(
-            stage_name="value_density_ranking",
-            input_count=len(filtered),
-            output_count=len(ranked),
-            latency_ms=rank_latency,
-            metadata={"top_5_densities": dict(list(value_densities.items())[:5])},
-        ))
-
-        # --- Stage 3: Budget-Constrained Selection ---
-        t_select = time.perf_counter()
-        selected, total_candidate_tokens = self._select_within_budget(ranked, cfg.budget)
-        select_latency = (time.perf_counter() - t_select) * 1000
-
-        trace_stages.append(StageTrace(
-            stage_name="budget_selection",
-            input_count=len(ranked),
-            output_count=len(selected),
-            latency_ms=select_latency,
-            input_tokens=total_candidate_tokens,
-            metadata={"budget": cfg.budget},
-        ))
-
-        # --- Stage 4: Format Output ---
-        t_format = time.perf_counter()
-        context_text = self._format_context(selected, cfg)
-        compiled_tokens = self._token_counter.count(context_text)
-        format_latency = (time.perf_counter() - t_format) * 1000
-
-        trace_stages.append(StageTrace(
-            stage_name="formatting",
-            input_count=len(selected),
-            output_count=1,
-            latency_ms=format_latency,
-            output_tokens=compiled_tokens,
-        ))
-
-        total_latency = (time.perf_counter() - t0) * 1000
-
-        # Compute compression ratio
-        compression_ratio = (
-            compiled_tokens / total_candidate_tokens
-            if total_candidate_tokens > 0
-            else 0.0
+        cfg = config or CompilationConfig()
+        started = time.perf_counter()
+        stages: list[StageTrace] = []
+        inputs = self._compiler_inputs(memories)
+        input_tokens = sum(
+            self._token_counter.count(item.scored.memory.content) for item in inputs
         )
+        normal_input_count = sum(
+            item.kind == CompilerInputKind.NORMAL_SELECTED for item in inputs
+        )
+        rescue_input_count = len(inputs) - normal_input_count
+
+        ir_started = time.perf_counter()
+        facts, excluded = self._build_ir(query, inputs, cfg)
+        ir_fact_count = len(facts)
+        stages.append(StageTrace(
+            stage_name="fact_ir",
+            input_count=len(inputs),
+            output_count=len(facts),
+            latency_ms=(time.perf_counter() - ir_started) * 1000,
+            input_tokens=input_tokens,
+            metadata={
+                "normal_selected": normal_input_count,
+                "oversized_rescue": rescue_input_count,
+            },
+        ))
+
+        dedup_started = time.perf_counter()
+        if cfg.strategy != CompilationStrategy.RAW_CONCAT:
+            facts, duplicate_exclusions = self._deduplicate(facts)
+            excluded.extend(duplicate_exclusions)
+        stages.append(StageTrace(
+            stage_name="fact_deduplication",
+            input_count=len(facts) + len(duplicate_exclusions)
+            if cfg.strategy != CompilationStrategy.RAW_CONCAT
+            else len(facts),
+            output_count=len(facts),
+            latency_ms=(time.perf_counter() - dedup_started) * 1000,
+        ))
+
+        serialization_started = time.perf_counter()
+        included: list[ContextFact] = []
+        for fact in facts:
+            proposed = self._serialize([*included, fact], cfg.format)
+            proposed_tokens = self._token_counter.count(proposed)
+            if proposed_tokens <= cfg.budget:
+                included.append(fact)
+            else:
+                excluded.append(ExcludedContextFact(
+                    fact_id=fact.fact_id,
+                    source_memory_ids=fact.source_memory_ids,
+                    input_kind=fact.input_kind,
+                    reason=FactExclusionReason.BUDGET,
+                    token_cost=fact.token_cost,
+                ))
+        context_text = self._serialize(included, cfg.format)
+        output_tokens = self._token_counter.count(context_text)
+        stages.append(StageTrace(
+            stage_name="serialization",
+            input_count=len(facts),
+            output_count=len(included),
+            latency_ms=(time.perf_counter() - serialization_started) * 1000,
+            input_tokens=sum(fact.token_cost for fact in facts),
+            output_tokens=output_tokens,
+            metadata={"format": cfg.format},
+        ))
+
+        memory_ids = self._ordered_memory_ids(included)
+        provenance_map = {
+            fact.fact_id: list(fact.source_memory_ids) for fact in included
+        }
+        provenance_coverage = (
+            sum(bool(fact.source_memory_ids) for fact in included) / len(included)
+            if included
+            else 1.0
+        )
+        source_texts = {
+            item.scored.memory.id: item.scored.memory.content for item in inputs
+        }
+        unsupported_count = sum(
+            not any(
+                fact_is_supported(fact.text, source_texts.get(source_id, ""))
+                for source_id in fact.source_memory_ids
+            )
+            for fact in included
+        )
+        unsupported_rate = unsupported_count / len(included) if included else 0.0
+        total_latency = (time.perf_counter() - started) * 1000
+        compression_ratio = output_tokens / input_tokens if input_tokens else 0.0
+        utilization = output_tokens / cfg.budget if cfg.budget else 0.0
 
         return CompiledContext(
             query=query,
             context_text=context_text,
-            total_tokens=compiled_tokens,
+            total_tokens=output_tokens,
             budget=cfg.budget,
-            memories_considered=len(memories),
-            memories_included=len(selected),
-            memories_excluded=len(memories) - len(selected),
+            memories_considered=len(inputs),
+            memories_included=len(memory_ids),
+            memories_excluded=len(inputs) - len(memory_ids),
             compression_ratio=compression_ratio,
-            included_memory_ids=[sm.memory.id for sm in selected],
+            included_memory_ids=memory_ids,
+            included_fact_ids=[fact.fact_id for fact in included],
+            facts=included,
+            excluded_facts=excluded,
+            provenance_map=provenance_map,
+            input_tokens=input_tokens,
+            utilization=utilization,
+            unsupported_fact_rate=unsupported_rate,
+            provenance_coverage=provenance_coverage,
+            strategy=cfg.strategy,
+            compression_level=cfg.compression_level,
             trace=CompilationTrace(
-                stages=trace_stages,
-                memories_considered=len(memories),
-                memories_included=len(selected),
-                memories_excluded=len(memories) - len(selected),
-                value_densities=value_densities,
+                stages=stages,
+                memories_considered=len(inputs),
+                memories_included=len(memory_ids),
+                memories_excluded=len(inputs) - len(memory_ids),
+                normal_selected_inputs=normal_input_count,
+                oversized_rescue_inputs=rescue_input_count,
+                rescued_facts_included=sum(
+                    fact.input_kind == CompilerInputKind.OVERSIZED_RESCUE
+                    for fact in included
+                ),
+                facts_created=ir_fact_count,
+                facts_included=len(included),
+                facts_excluded=len(excluded),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                provenance_coverage=provenance_coverage,
                 total_latency_ms=total_latency,
             ),
         )
 
-    # --- Internal Methods ---
+    def _build_ir(
+        self,
+        query: str,
+        memories: list[_CompilerInput],
+        config: CompilationConfig,
+    ) -> tuple[list[ContextFact], list[ExcludedContextFact]]:
+        facts: list[ContextFact] = []
+        excluded: list[ExcludedContextFact] = []
+        query_terms = _compiler_tokens(query)
+        for compiler_input in memories:
+            scored = compiler_input.scored
+            memory = scored.memory
+            if memory.privacy_level == PrivacyLevel.RESTRICTED:
+                fact_id = self._fact_id(memory.content, [memory.id])
+                excluded.append(ExcludedContextFact(
+                    fact_id=fact_id,
+                    source_memory_ids=[memory.id],
+                    input_kind=compiler_input.kind,
+                    reason=FactExclusionReason.PRIVACY_RESTRICTED,
+                    token_cost=self._token_counter.count(memory.content),
+                ))
+                continue
+
+            if (
+                compiler_input.kind == CompilerInputKind.NORMAL_SELECTED
+                and (
+                    config.strategy in {
+                        CompilationStrategy.RAW_CONCAT,
+                        CompilationStrategy.DEDUP_ONLY,
+                    }
+                    or config.compression_level == CompressionLevel.NONE
+                )
+            ):
+                texts = [memory.content.strip()]
+            else:
+                clauses = self._split_clauses(memory.content)
+                scored_clauses = [
+                    (clause, self._query_relevance(clause, query_terms))
+                    for clause in clauses
+                ]
+                texts = [
+                    self._compress_clause(
+                        clause,
+                        query,
+                        query_terms,
+                        config.compression_level
+                        if config.compression_level != CompressionLevel.NONE
+                        else CompressionLevel.LIGHT,
+                    )
+                    for clause, relevance in scored_clauses
+                    if relevance > 0.0
+                ]
+                texts = [text for text in texts if text]
+                if not texts:
+                    fact_id = self._fact_id(memory.content, [memory.id])
+                    excluded.append(ExcludedContextFact(
+                        fact_id=fact_id,
+                        source_memory_ids=[memory.id],
+                        input_kind=compiler_input.kind,
+                        reason=FactExclusionReason.QUERY_IRRELEVANT,
+                        token_cost=self._token_counter.count(memory.content),
+                    ))
+                    continue
+
+            for text in texts:
+                fact = self._make_fact(
+                    text, scored, query_terms, compiler_input.kind
+                )
+                facts.append(fact)
+        return facts, excluded
 
     @staticmethod
-    def _privacy_filter(memories: list[ScoredMemory]) -> list[ScoredMemory]:
-        """Remove RESTRICTED memories from compilation candidates.
-
-        RESTRICTED memories must never be sent to external LLMs.
-        """
+    def _split_clauses(text: str) -> list[str]:
         return [
-            sm for sm in memories
-            if sm.memory.privacy_level != PrivacyLevel.RESTRICTED
+            clause.strip()
+            for clause in _CLAUSE_BOUNDARY.split(" ".join(text.split()))
+            if clause.strip()
+        ]
+
+    def _compress_clause(
+        self,
+        clause: str,
+        query: str,
+        query_terms: frozenset[str],
+        level: CompressionLevel,
+    ) -> str:
+        text = clause.strip()
+        if not _WHY_QUERY.search(query) and not _NEGATION.search(text):
+            match = re.search(r"\s+(?:mainly\s+)?for\s+(.+?)([.!?]?)$", text, re.IGNORECASE)
+            if match:
+                reason_terms = _compiler_tokens(match.group(1))
+                if not (reason_terms & query_terms):
+                    text = text[:match.start()].rstrip() + match.group(2)
+        if (
+            level == CompressionLevel.AGGRESSIVE
+            and not (_NEGATION.search(text) or _UNCERTAINTY.search(text))
+        ):
+            text = re.sub(r"^(?:the\s+)?user\s+", "", text, flags=re.IGNORECASE)
+            if text:
+                text = text[0].upper() + text[1:]
+        return text
+
+    def _make_fact(
+        self,
+        text: str,
+        scored: ScoredMemory,
+        query_terms: frozenset[str],
+        input_kind: CompilerInputKind,
+    ) -> ContextFact:
+        memory = scored.memory
+        temporal = self._temporal_status(text, memory.status)
+        event_ids = (
+            [memory.provenance_event_id] if memory.provenance_event_id is not None else []
+        )
+        return ContextFact(
+            fact_id=self._fact_id(text, [memory.id]),
+            text=text,
+            source_memory_ids=[memory.id],
+            input_kind=input_kind,
+            provenance_event_ids=event_ids,
+            memory_type=memory.type,
+            temporal_status=temporal,
+            confidence=memory.confidence,
+            importance=memory.importance,
+            negated=bool(_NEGATION.search(text)),
+            uncertain=bool(_UNCERTAINTY.search(text)),
+            causal=bool(_CAUSAL.search(text)),
+            query_relevance=self._query_relevance(text, query_terms),
+            token_cost=self._token_counter.count(text),
+        )
+
+    @staticmethod
+    def _query_relevance(text: str, query_terms: frozenset[str]) -> float:
+        if not query_terms:
+            return 1.0
+        fact_terms = _compiler_tokens(text)
+        return min(1.0, len(fact_terms & query_terms) / len(query_terms))
+
+    @staticmethod
+    def _temporal_status(
+        text: str, memory_status: MemoryStatus
+    ) -> CandidateTemporalStatus:
+        if _HISTORICAL.search(text) or memory_status in {
+            MemoryStatus.HISTORICAL,
+            MemoryStatus.SUPERSEDED,
+        }:
+            return CandidateTemporalStatus.HISTORICAL
+        if _FUTURE.search(text):
+            return CandidateTemporalStatus.FUTURE
+        if _CURRENT.search(text) or memory_status == MemoryStatus.ACTIVE:
+            return CandidateTemporalStatus.CURRENT
+        return CandidateTemporalStatus.UNSPECIFIED
+
+    def _deduplicate(
+        self, facts: list[ContextFact]
+    ) -> tuple[list[ContextFact], list[ExcludedContextFact]]:
+        kept: list[ContextFact] = []
+        excluded: list[ExcludedContextFact] = []
+        for fact in facts:
+            match_index = next(
+                (
+                    index
+                    for index, existing in enumerate(kept)
+                    if self._merge_compatible(existing, fact)
+                ),
+                None,
+            )
+            if match_index is None:
+                kept.append(fact)
+                continue
+            existing = kept[match_index]
+            merged = self._merge_facts(existing, fact)
+            kept[match_index] = merged
+            excluded.append(ExcludedContextFact(
+                fact_id=fact.fact_id,
+                source_memory_ids=fact.source_memory_ids,
+                input_kind=fact.input_kind,
+                reason=FactExclusionReason.DUPLICATE,
+                token_cost=fact.token_cost,
+            ))
+        return kept, excluded
+
+    @staticmethod
+    def _merge_compatible(left: ContextFact, right: ContextFact) -> bool:
+        if (
+            left.memory_type != right.memory_type
+            or left.negated != right.negated
+            or left.uncertain != right.uncertain
+            or left.temporal_status != right.temporal_status
+        ):
+            return False
+        similarity = redundancy_similarity(
+            information_tokens(left.text),
+            information_tokens(right.text),
+        )
+        return similarity >= 0.75
+
+    def _merge_facts(self, left: ContextFact, right: ContextFact) -> ContextFact:
+        representative = min(
+            (left, right),
+            key=lambda fact: (
+                -self._modifier_evidence(fact),
+                fact.token_cost,
+                fact.text.casefold(),
+                fact.fact_id,
+            ),
+        )
+        source_ids = self._ordered_unique([*left.source_memory_ids, *right.source_memory_ids])
+        event_ids = self._ordered_unique(
+            [*left.provenance_event_ids, *right.provenance_event_ids]
+        )
+        return representative.model_copy(update={
+            "fact_id": self._fact_id(representative.text, source_ids),
+            "source_memory_ids": source_ids,
+            "provenance_event_ids": event_ids,
+            "confidence": max(left.confidence, right.confidence),
+            "importance": max(left.importance, right.importance),
+            "query_relevance": max(left.query_relevance, right.query_relevance),
+            "input_kind": (
+                CompilerInputKind.NORMAL_SELECTED
+                if CompilerInputKind.NORMAL_SELECTED
+                in {left.input_kind, right.input_kind}
+                else CompilerInputKind.OVERSIZED_RESCUE
+            ),
+        })
+
+    @staticmethod
+    def _compiler_inputs(
+        memories: list[ScoredMemory] | SelectionResult,
+    ) -> list[_CompilerInput]:
+        if isinstance(memories, SelectionResult):
+            selected = [
+                _CompilerInput(item, CompilerInputKind.NORMAL_SELECTED)
+                for item in memories.selected_memories
+            ]
+            selected_ids = {item.scored.memory.id for item in selected}
+            rescued = [
+                _CompilerInput(item, CompilerInputKind.OVERSIZED_RESCUE)
+                for item in memories.compiler_rescue_candidates
+                if item.memory.id not in selected_ids
+            ]
+            return [*selected, *rescued]
+        return [
+            _CompilerInput(item, CompilerInputKind.NORMAL_SELECTED)
+            for item in memories
         ]
 
     @staticmethod
-    def _rank_by_value_density(
-        memories: list[ScoredMemory],
-    ) -> list[tuple[ScoredMemory, float]]:
-        """Compute value_density and sort descending.
-
-        value = retrieval_score * importance * confidence
-        cost = token_count (minimum 1 to avoid division by zero)
-        value_density = value / cost
-        """
-        ranked: list[tuple[ScoredMemory, float]] = []
-
-        for sm in memories:
-            value = sm.final_score * sm.memory.importance * sm.memory.confidence
-            cost = max(1, sm.memory.token_count)
-            density = value / cost
-            ranked.append((sm, density))
-
-        ranked.sort(key=lambda x: x[1], reverse=True)
-        return ranked
-
-    def _select_within_budget(
-        self,
-        ranked: list[tuple[ScoredMemory, float]],
-        budget: int,
-    ) -> tuple[list[ScoredMemory], int]:
-        """Greedily select memories that fit within the token budget.
-
-        Returns (selected_memories, total_candidate_tokens).
-        """
-        selected: list[ScoredMemory] = []
-        tokens_used = 0
-        total_candidate_tokens = sum(sm.memory.token_count for sm, _ in ranked)
-
-        # Reserve tokens for formatting overhead (numbering, newlines, labels)
-        # Estimate: ~10 tokens per memory for formatting
-        formatting_overhead_per_memory = 10
-
-        for sm, _density in ranked:
-            memory_cost = sm.memory.token_count + formatting_overhead_per_memory
-
-            if tokens_used + memory_cost <= budget:
-                selected.append(sm)
-                tokens_used += memory_cost
-
-        return selected, total_candidate_tokens
+    def _modifier_evidence(fact: ContextFact) -> int:
+        """Prefer merged wording that explicitly carries critical modifiers."""
+        score = 0
+        if fact.negated and _NEGATION.search(fact.text):
+            score += 1
+        if fact.uncertain and _UNCERTAINTY.search(fact.text):
+            score += 1
+        if fact.causal and _CAUSAL.search(fact.text):
+            score += 1
+        if (
+            fact.temporal_status == CandidateTemporalStatus.HISTORICAL
+            and _HISTORICAL.search(fact.text)
+        ):
+            score += 1
+        if (
+            fact.temporal_status == CandidateTemporalStatus.CURRENT
+            and _CURRENT.search(fact.text)
+        ):
+            score += 1
+        if (
+            fact.temporal_status == CandidateTemporalStatus.FUTURE
+            and _FUTURE.search(fact.text)
+        ):
+            score += 1
+        return score
 
     @staticmethod
-    def _format_context(
-        memories: list[ScoredMemory],
-        config: CompilationConfig,
-    ) -> str:
-        """Format selected memories into a context string."""
-        if not memories:
+    def _ordered_unique(values: Iterable[UUID]) -> list[UUID]:
+        return list(dict.fromkeys(values))
+
+    @staticmethod
+    def _ordered_memory_ids(facts: list[ContextFact]) -> list[UUID]:
+        return list(dict.fromkeys(
+            source_id for fact in facts for source_id in fact.source_memory_ids
+        ))
+
+    @staticmethod
+    def _fact_id(text: str, source_ids: list[UUID]) -> str:
+        normalized = " ".join(text.casefold().split())
+        payload = normalized + "|" + "|".join(str(value) for value in source_ids)
+        return "cf_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _serialize(facts: list[ContextFact], output_format: str) -> str:
+        if not facts:
             return ""
+        if output_format == "json":
+            return json.dumps(
+                {"facts": [fact.text for fact in facts]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return "USER CONTEXT\n" + "\n".join(f"- {fact.text}" for fact in facts)
 
-        if config.format == "json":
-            import json
 
-            items = []
-            for sm in memories:
-                item: dict = {"content": sm.memory.content, "type": sm.memory.type.value}
-                if config.include_sources and sm.memory.source_type:
-                    item["source"] = sm.memory.source_type
-                if config.include_confidence:
-                    item["confidence"] = sm.memory.confidence
-                items.append(item)
-            return json.dumps(items, indent=2)
-
-        # Text format
-        lines: list[str] = []
-        lines.append("## User Context")
-        lines.append("")
-
-        for i, sm in enumerate(memories, 1):
-            mem = sm.memory
-            line = f"{i}. {mem.content}"
-
-            annotations: list[str] = []
-            if config.include_sources and mem.source_type:
-                annotations.append(f"source: {mem.source_type}")
-            if config.include_confidence:
-                annotations.append(f"confidence: {mem.confidence:.1%}")
-
-            if annotations:
-                line += f"  ({', '.join(annotations)})"
-
-            lines.append(line)
-
-        return "\n".join(lines)
+# Compatibility name retained for API and external imports.
+GreedyContextCompiler = QueryAwareContextCompiler

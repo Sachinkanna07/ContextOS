@@ -9,6 +9,7 @@ from contextos.api.server import get_service
 from contextos.core.models import (
     CompiledContext,
     CompilationConfig,
+    ContextBudget,
     RetrievalConfig,
     RetrievalQuery,
     RetrievalResult,
@@ -50,15 +51,23 @@ async def compile_context(request: CompileRequest) -> CompiledContext:
     """Retrieve and compile context for a query."""
     retrieval_service = get_service("retrieval")
     compilation_service = get_service("compilation")
+    optimizer = get_service("optimizer")
 
     # First retrieve
     retrieval_result = await retrieval_service.retrieve(
         request.query, request.retrieval_config
     )
 
-    # Then compile
+    compilation_config = request.config or CompilationConfig()
+    selection = optimizer.optimize(
+        request.query,
+        retrieval_result.memories,
+        ContextBudget(max_tokens=compilation_config.budget),
+    )
+
+    # Carry selected memories and eligible oversized rescue candidates explicitly.
     return await compilation_service.compile(
         query=request.query,
-        memories=retrieval_result.memories,
-        config=request.config,
+        memories=selection,
+        config=compilation_config,
     )
