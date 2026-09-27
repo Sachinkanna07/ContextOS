@@ -12,6 +12,7 @@ Protocol rules:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from contextos.core.enums import (
     MemoryStatus,
     MemoryType,
     OptimizationStrategy,
+    RoutingPolicy,
     SourceRole,
 )
 from contextos.core.models import (
@@ -38,14 +40,20 @@ from contextos.core.models import (
     MemoryFilters,
     MemoryRelation,
     MemoryUpdate,
+    ModelCapabilities,
+    ModelInvocationTelemetry,
+    ModelRequest,
+    ModelResponse,
     RawEvent,
     RetrievalConfig,
     RetrievalQuery,
     RetrievalResult,
+    RouteDecision,
     SelectionResult,
     ScanResult,
     ScoredMemory,
     StageTrace,
+    TelemetrySummary,
     TemporalDecision,
     TemporalResolutionResult,
     MemorySlot,
@@ -435,3 +443,84 @@ class TraceCollector(Protocol):
     async def get_traces(self, limit: int = 100) -> list[dict[str, Any]]: ...
 
     async def get_stats(self) -> dict[str, Any]: ...
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Model Runtime, Router, and Telemetry Protocols
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class ModelProvider(Protocol):
+    """Downstream LLM execution provider interface."""
+
+    @property
+    def provider_id(self) -> str:
+        """Unique provider identifier (e.g. 'fake', 'ollama', 'openai_compatible')."""
+        ...
+
+    @property
+    def is_local(self) -> bool:
+        """Whether this provider runs locally without external network exfiltration."""
+        ...
+
+    async def list_models(self) -> list[ModelCapabilities]:
+        """List models offered by this provider."""
+        ...
+
+    async def health(self) -> bool:
+        """Check provider connectivity and readiness."""
+        ...
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Generate a completion for the given request."""
+        ...
+
+    def count_tokens(self, text: str, model: str) -> int:
+        """Count tokens using this provider's tokenizer or tokenizer family."""
+        ...
+
+
+@runtime_checkable
+class ModelRouter(Protocol):
+    """Deterministic routing protocol to select providers and models."""
+
+    async def route(
+        self,
+        request: ModelRequest,
+        providers: dict[str, ModelProvider],
+        policy: RoutingPolicy | None = None,
+    ) -> RouteDecision:
+        """Select the target provider and model based on policy and constraints."""
+        ...
+
+
+@runtime_checkable
+class TelemetryRepository(Protocol):
+    """Persistence repository for model invocation telemetry."""
+
+    async def record(self, telemetry: ModelInvocationTelemetry) -> None:
+        """Persist a single model invocation telemetry record."""
+        ...
+
+    async def get(self, invocation_id: UUID) -> ModelInvocationTelemetry | None:
+        """Retrieve a telemetry record by invocation UUID."""
+        ...
+
+    async def list_recent(self, limit: int = 50) -> list[ModelInvocationTelemetry]:
+        """List recent invocations in descending chronological order."""
+        ...
+
+    async def count(self) -> int:
+        """Count total recorded invocations."""
+        ...
+
+    async def summary(
+        self,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+    ) -> TelemetrySummary:
+        """Compute aggregated token usage, avoidance, and latency statistics."""
+        ...

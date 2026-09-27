@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Schema SQL — Phase 1 initial schema
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -222,6 +222,60 @@ AFTER DELETE ON memory_relations BEGIN
 END;
 """
 
+MIGRATION_5_SQL = """
+CREATE TABLE IF NOT EXISTS model_invocations (
+    id TEXT PRIMARY KEY,
+    invocation_id TEXT NOT NULL UNIQUE,
+    session_id TEXT,
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    is_local INTEGER NOT NULL DEFAULT 1,
+    timestamp TEXT NOT NULL,
+    candidate_context_tokens INTEGER NOT NULL DEFAULT 0,
+    retrieved_context_tokens INTEGER NOT NULL DEFAULT 0,
+    optimized_context_tokens INTEGER NOT NULL DEFAULT 0,
+    compiled_context_tokens INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens_before_context INTEGER NOT NULL DEFAULT 0,
+    final_input_tokens INTEGER NOT NULL DEFAULT 0,
+    provider_input_tokens INTEGER NOT NULL DEFAULT 0,
+    provider_output_tokens INTEGER NOT NULL DEFAULT 0,
+    provider_total_tokens INTEGER NOT NULL DEFAULT 0,
+    token_measurement_source TEXT NOT NULL,
+    context_tokens_avoided INTEGER NOT NULL DEFAULT 0,
+    reduction_ratio REAL NOT NULL DEFAULT 0.0,
+    lexical_candidate_count INTEGER NOT NULL DEFAULT 0,
+    dense_candidate_count INTEGER NOT NULL DEFAULT 0,
+    hybrid_candidate_count INTEGER NOT NULL DEFAULT 0,
+    graph_expanded_count INTEGER NOT NULL DEFAULT 0,
+    temporal_filtered_count INTEGER NOT NULL DEFAULT 0,
+    selected_memory_count INTEGER NOT NULL DEFAULT 0,
+    compiled_fact_count INTEGER NOT NULL DEFAULT 0,
+    retrieval_ms REAL NOT NULL DEFAULT 0.0,
+    optimization_ms REAL NOT NULL DEFAULT 0.0,
+    compilation_ms REAL NOT NULL DEFAULT 0.0,
+    routing_ms REAL NOT NULL DEFAULT 0.0,
+    token_counting_ms REAL NOT NULL DEFAULT 0.0,
+    provider_latency_ms REAL NOT NULL DEFAULT 0.0,
+    end_to_end_ms REAL NOT NULL DEFAULT 0.0,
+    routing_policy TEXT NOT NULL,
+    routing_reason TEXT NOT NULL,
+    selected_provider TEXT NOT NULL,
+    selected_model TEXT NOT NULL,
+    fallback_used INTEGER NOT NULL DEFAULT 0,
+    fallback_reason TEXT,
+    finish_reason TEXT NOT NULL DEFAULT 'stop',
+    status TEXT NOT NULL DEFAULT 'success',
+    error_code TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_invocations_timestamp ON model_invocations(timestamp);
+CREATE INDEX IF NOT EXISTS idx_invocations_provider ON model_invocations(provider_id);
+CREATE INDEX IF NOT EXISTS idx_invocations_model ON model_invocations(model_id);
+CREATE INDEX IF NOT EXISTS idx_invocations_is_local ON model_invocations(is_local);
+"""
+
+
 
 class Database:
     """Manages the SQLite database connection and schema.
@@ -338,6 +392,19 @@ class Database:
                 await self._connection.rollback()
                 raise MigrationError("Failed to apply schema migration 4") from exc
             current_version = 4
+
+        if current_version < 5:
+            try:
+                await self._connection.executescript(
+                    "BEGIN IMMEDIATE;\n" + MIGRATION_5_SQL
+                    + "\nINSERT INTO schema_version (version, description) "
+                    "VALUES (5, 'Model invocation telemetry persistence');\nCOMMIT;"
+                )
+            except Exception as exc:
+                await self._connection.rollback()
+                raise MigrationError("Failed to apply schema migration 5") from exc
+            current_version = 5
+
 
         if current_version != SCHEMA_VERSION:
             raise MigrationError(

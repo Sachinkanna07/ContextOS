@@ -180,3 +180,110 @@ class ConfigKeyError(ConfigError):
     def __init__(self, key: str) -> None:
         self.key = key
         super().__init__(f"Unknown configuration key: {key}")
+
+
+# --- Model Runtime & Routing Errors (Phase 9) ---
+
+
+class ModelRuntimeError(ContextOSError):
+    """Base exception for all model runtime, provider, and router errors."""
+
+
+class ProviderUnavailableError(ModelRuntimeError):
+    """Raised when a requested provider runtime is unreachable or unhealthy."""
+
+    def __init__(self, provider_id: str, message: str = "") -> None:
+        self.provider_id = provider_id
+        detail = f"Provider '{provider_id}' is unavailable"
+        if message:
+            detail += f": {message}"
+        super().__init__(detail)
+
+
+class ModelUnavailableError(ModelRuntimeError):
+    """Raised when a requested model is not offered or disabled by the provider."""
+
+    def __init__(self, model_id: str, provider_id: str = "") -> None:
+        self.model_id = model_id
+        self.provider_id = provider_id
+        msg = f"Model '{model_id}' is unavailable"
+        if provider_id:
+            msg += f" on provider '{provider_id}'"
+        super().__init__(msg)
+
+
+class ContextWindowExceededError(ModelRuntimeError):
+    """Raised when prompt and context exceed the provider/model context window."""
+
+    def __init__(
+        self,
+        model_id: str,
+        required_tokens: int,
+        context_window: int,
+        prompt_tokens: int = 0,
+        compiled_context_tokens: int = 0,
+        reserved_output_tokens: int = 0,
+    ) -> None:
+        self.model_id = model_id
+        self.required_tokens = required_tokens
+        self.context_window = context_window
+        self.prompt_tokens = prompt_tokens
+        self.compiled_context_tokens = compiled_context_tokens
+        self.reserved_output_tokens = reserved_output_tokens
+        super().__init__(
+            f"Context window exceeded for model '{model_id}': "
+            f"required {required_tokens} tokens (prompt: {prompt_tokens}, "
+            f"context: {compiled_context_tokens}, reserved output: {reserved_output_tokens}), "
+            f"but context window is {context_window} tokens."
+        )
+
+
+class ProviderTimeoutError(ModelRuntimeError):
+    """Raised when a provider request exceeds its allotted timeout."""
+
+    def __init__(self, provider_id: str, timeout_seconds: float) -> None:
+        self.provider_id = provider_id
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"Provider '{provider_id}' timed out after {timeout_seconds:.1f} seconds"
+        )
+
+
+class ProviderAuthenticationError(ModelRuntimeError):
+    """Raised when provider authentication fails. Never echoes credentials."""
+
+    def __init__(self, provider_id: str, message: str = "Authentication failed") -> None:
+        self.provider_id = provider_id
+        super().__init__(f"Provider '{provider_id}' authentication error: {message}")
+
+
+class ProviderRateLimitError(ModelRuntimeError):
+    """Raised when provider returns a rate limit / 429 response."""
+
+    def __init__(self, provider_id: str, retry_after: float | None = None) -> None:
+        self.provider_id = provider_id
+        self.retry_after = retry_after
+        msg = f"Provider '{provider_id}' rate limit reached"
+        if retry_after is not None:
+            msg += f" (retry after {retry_after:.1f}s)"
+        super().__init__(msg)
+
+
+class MalformedProviderResponseError(ModelRuntimeError):
+    """Raised when provider returns an unparseable or unexpected payload structure."""
+
+    def __init__(self, provider_id: str, reason: str = "") -> None:
+        self.provider_id = provider_id
+        msg = f"Malformed response from provider '{provider_id}'"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(msg)
+
+
+class RoutingFailureError(ModelRuntimeError):
+    """Raised when the router cannot select a model under current policy and constraints."""
+
+    def __init__(self, policy: str, reason: str) -> None:
+        self.policy = policy
+        self.reason = reason
+        super().__init__(f"Routing failure under policy '{policy}': {reason}")

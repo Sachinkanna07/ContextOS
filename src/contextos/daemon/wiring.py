@@ -180,5 +180,58 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     compiler = QueryAwareContextCompiler(token_counter=token_counter)
     services["compilation"] = compiler
 
+    # --- Phase 9: Telemetry Repository & Query Service ---
+    from contextos.storage.telemetry_repo import SqliteTelemetryRepository
+    from contextos.services.telemetry_query import TelemetryQueryService
+
+    telemetry_repo = SqliteTelemetryRepository(conn)
+    telemetry_query = TelemetryQueryService(telemetry_repo)
+    services["telemetry_repo"] = telemetry_repo
+    services["telemetry_query"] = telemetry_query
+
+    # --- Phase 9: Provider Adapters ---
+    from contextos.providers.fake import DeterministicFakeProvider
+    from contextos.providers.ollama import OllamaProvider
+    from contextos.providers.openai_compatible import OpenAICompatibleProvider
+
+    fake_provider = DeterministicFakeProvider()
+    ollama_provider = OllamaProvider()
+    openai_compatible_provider = OpenAICompatibleProvider()
+
+    providers = {
+        fake_provider.provider_id: fake_provider,
+        ollama_provider.provider_id: ollama_provider,
+        openai_compatible_provider.provider_id: openai_compatible_provider,
+    }
+    services["fake_provider"] = fake_provider
+    services["ollama_provider"] = ollama_provider
+    services["openai_compatible_provider"] = openai_compatible_provider
+    services["providers"] = providers
+
+    # --- Phase 9: Model Router ---
+    from contextos.core.enums import RoutingPolicy
+    from contextos.services.router import DeterministicModelRouter
+
+    router = DeterministicModelRouter(
+        default_provider_id="fake",
+        default_model_id="fake-default",
+        default_policy=RoutingPolicy.LOCAL_FIRST,
+    )
+    services["router"] = router
+
+    # --- Phase 9: Unified ContextOS Model Service ---
+    from contextos.services.model_service import ContextOSModelService
+
+    model_service = ContextOSModelService(
+        retrieval_service=retrieval,
+        optimizer=optimizer,
+        compilation_service=compiler,
+        router=router,
+        providers=providers,
+        telemetry_repo=telemetry_repo,
+        token_counter=token_counter,
+    )
+    services["model_service"] = model_service
+
     logger.info("All services wired successfully")
     return services

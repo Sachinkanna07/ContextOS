@@ -422,3 +422,58 @@ class SourceTrust(StrEnum):
     IMPORTED_DOCUMENT = "imported_document"
     TOOL_OUTPUT = "tool_output"
     MODEL_OUTPUT = "model_output"
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Model Runtime, Routing, and Telemetry
+# ---------------------------------------------------------------------------
+
+
+class RoutingPolicy(StrEnum):
+    """Policies guiding deterministic model routing decisions."""
+
+    EXPLICIT = "explicit"
+    """Target provider and/or model explicitly requested."""
+
+    LOCAL_FIRST = "local_first"
+    """Prefer healthy local runtime; fallback to cloud only if configured."""
+
+    FIXED_DEFAULT = "fixed_default"
+    """Route strictly to the configured default provider/model."""
+
+    CAPABILITY_AWARE = "capability_aware"
+    """Select model meeting required capabilities and context window fit."""
+
+
+class TokenMeasurementSource(StrEnum):
+    """Provenance/measurement method for token counts."""
+
+    PROVIDER_REPORTED = "provider_reported"
+    """Exact usage returned in the provider's API response."""
+
+    TOKENIZER_COUNTED = "tokenizer_counted"
+    """Locally calculated via exact or target-model tokenizer."""
+
+    APPROXIMATED = "approximated"
+    """Calculated via deterministic heuristic/approximation."""
+
+
+class ModelFinishReason(StrEnum):
+    """Reason why downstream generation completed."""
+
+    STOP = "stop"
+    LENGTH = "length"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+    CONTENT_FILTER = "content_filter"
+    UNKNOWN = "unknown"
+
+
+class ProviderType(StrEnum):
+    """Supported provider adapter classes."""
+
+    FAKE = "fake"
+    OLLAMA = "ollama"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"

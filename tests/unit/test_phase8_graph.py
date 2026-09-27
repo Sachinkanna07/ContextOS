@@ -474,7 +474,7 @@ async def test_phase7_to_phase8_incremental_migration(tmp_path: Path):
     reopened = Database(path)
     await reopened.initialize()
     cursor = await reopened.connection().execute("SELECT MAX(version) FROM schema_version")
-    assert (await cursor.fetchone())[0] == SCHEMA_VERSION == 4
+    assert (await cursor.fetchone())[0] == SCHEMA_VERSION
     assert await SqliteGraphRepository(reopened.connection()).counts() == (0, 0, 0)
     assert (await SqliteMemoryRepository(reopened.connection()).get(memory_id)).content == "Atlas uses Ollama"
     await reopened.close()

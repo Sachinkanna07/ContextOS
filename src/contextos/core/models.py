@@ -37,14 +37,18 @@ from contextos.core.enums import (
     FactExclusionReason,
     GraphNodeType,
     GraphRelationType,
+    ModelFinishReason,
+    ProviderType,
     RelationType,
     RetrievalMode,
+    RoutingPolicy,
     SecretType,
     SourceRole,
     SourceTrust,
     TemporalOutcome,
     TemporalPrecision,
     TemporalScope,
+    TokenMeasurementSource,
 )
 
 
@@ -907,3 +911,173 @@ class EventFilters(BaseModel):
     memory_id: UUID | None = None
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Model Capabilities, Requests, Responses, and Routing
+# ---------------------------------------------------------------------------
+
+
+class ModelCapabilities(BaseModel):
+    """Structured, inspectable capability metadata for a model."""
+
+    provider_id: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    context_window: int = Field(ge=1)
+    max_output_tokens: int = Field(default=2048, ge=1)
+    supports_tools: bool = False
+    supports_json: bool = False
+    supports_vision: bool = False
+    local: bool = True
+    tokenizer_family: str = Field(default="cl100k_base")
+    enabled: bool = True
+    cost_per_million_input: float | None = Field(default=None, ge=0.0)
+    cost_per_million_output: float | None = Field(default=None, ge=0.0)
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelRequest(BaseModel):
+    """Provider-neutral model execution request."""
+
+    user_prompt: str = Field(min_length=1)
+    model: str | None = None
+    provider: str | None = None
+    system_prompt: str | None = None
+    compiled_context: CompiledContext | None = None
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_output_tokens: int | None = Field(default=1024, ge=1)
+    timeout_seconds: float = Field(default=30.0, ge=0.5, le=600.0)
+    routing_policy: RoutingPolicy | None = None
+    allow_fallback: bool = False
+    required_capabilities: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelResponse(BaseModel):
+    """Standardized response from downstream model generation."""
+
+    text: str
+    model_id: str
+    provider_id: str
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    finish_reason: ModelFinishReason = ModelFinishReason.STOP
+    token_measurement_source: TokenMeasurementSource = TokenMeasurementSource.PROVIDER_REPORTED
+    raw_usage: dict[str, Any] | None = None
+    request_id: str | None = None
+    error: str | None = None
+
+
+class RouteDecision(BaseModel):
+    """Traceable decision record produced by the model router."""
+
+    policy: RoutingPolicy
+    reason: str
+    candidates_evaluated: list[str] = Field(default_factory=list)
+    selected_provider: str
+    selected_model: str
+    fallback_used: bool = False
+    initial_provider: str | None = None
+    fallback_reason: str | None = None
+    routing_latency_ms: float = Field(default=0.0, ge=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: Model Invocation Telemetry & Aggregation
+# ---------------------------------------------------------------------------
+
+
+class ModelInvocationTelemetry(BaseModel):
+    """Structured, privacy-safe record of a single model invocation."""
+
+    # Identifiers
+    invocation_id: UUID = Field(default_factory=uuid4)
+    session_id: str | None = None
+    provider_id: str
+    model_id: str
+    is_local: bool
+    timestamp: datetime = Field(default_factory=_utcnow)
+
+    # Context Pipeline Tokens
+    candidate_context_tokens: int = Field(default=0, ge=0)
+    retrieved_context_tokens: int = Field(default=0, ge=0)
+    optimized_context_tokens: int = Field(default=0, ge=0)
+    compiled_context_tokens: int = Field(default=0, ge=0)
+    prompt_tokens_before_context: int = Field(default=0, ge=0)
+    preflight_input_tokens: int = Field(default=0, ge=0)
+    final_input_tokens: int = Field(default=0, ge=0)
+
+    # Provider Usage
+    provider_input_tokens: int = Field(default=0, ge=0)
+    provider_output_tokens: int = Field(default=0, ge=0)
+    provider_total_tokens: int = Field(default=0, ge=0)
+    token_measurement_source: TokenMeasurementSource = TokenMeasurementSource.PROVIDER_REPORTED
+
+    # Savings & Reduction
+    estimated_full_history_tokens: int | None = None
+    context_tokens_avoided: int = Field(default=0, ge=0)
+    reduction_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    # Retrieval / Augmentation Contributions
+    lexical_candidate_count: int = Field(default=0, ge=0)
+    dense_candidate_count: int = Field(default=0, ge=0)
+    hybrid_candidate_count: int = Field(default=0, ge=0)
+    graph_expanded_count: int = Field(default=0, ge=0)
+    temporal_filtered_count: int = Field(default=0, ge=0)
+    selected_memory_count: int = Field(default=0, ge=0)
+    compiled_fact_count: int = Field(default=0, ge=0)
+
+    # Stage Timings (milliseconds)
+    retrieval_ms: float = Field(default=0.0, ge=0.0)
+    optimization_ms: float = Field(default=0.0, ge=0.0)
+    compilation_ms: float = Field(default=0.0, ge=0.0)
+    routing_ms: float = Field(default=0.0, ge=0.0)
+    token_counting_ms: float = Field(default=0.0, ge=0.0)
+    provider_latency_ms: float = Field(default=0.0, ge=0.0)
+    end_to_end_ms: float = Field(default=0.0, ge=0.0)
+
+    # Routing Audit
+    routing_policy: RoutingPolicy = RoutingPolicy.LOCAL_FIRST
+    routing_reason: str = ""
+    selected_provider: str = ""
+    selected_model: str = ""
+    fallback_used: bool = False
+    fallback_reason: str | None = None
+
+    # Status & Evaluation Placeholders
+    finish_reason: ModelFinishReason = ModelFinishReason.STOP
+    status: str = "success"
+    error_code: str | None = None
+    answer_score: float | None = None
+    required_fact_coverage: float | None = None
+    benchmark_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TelemetrySummary(BaseModel):
+    """Aggregated invocation metrics for CLI and dashboard consumption."""
+
+    total_invocations: int = 0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_tokens_avoided: int = 0
+    average_reduction_ratio: float = 0.0
+    weighted_reduction_ratio: float = 0.0
+    average_provider_latency_ms: float = 0.0
+    local_invocations: int = 0
+    remote_invocations: int = 0
+    by_provider: dict[str, Any] = Field(default_factory=dict)
+    by_model: dict[str, Any] = Field(default_factory=dict)
+
+
+class AskResult(BaseModel):
+    """Result of an end-to-end ContextOSModelService ask execution."""
+
+    response: ModelResponse
+    compiled_context: CompiledContext
+    route_decision: RouteDecision
+    telemetry: ModelInvocationTelemetry
