@@ -77,6 +77,23 @@ class LLMConfig(BaseSettings):
     api_key_env: str = ""
 
 
+class MCPConfig(BaseSettings):
+    """Local MCP exposure; writes and destructive operations fail closed."""
+
+    enabled: bool = False
+    transport: str = "stdio"
+    allow_read: bool = True
+    allow_write: bool = False
+    allow_delete: bool = False
+    allow_telemetry: bool = True
+    max_input_chars: int = Field(default=10_000, ge=1, le=100_000)
+    max_search_results: int = Field(default=25, ge=1, le=200)
+    max_history_entries: int = Field(default=50, ge=1, le=200)
+    max_graph_nodes: int = Field(default=100, ge=1, le=1_000)
+    max_graph_edges: int = Field(default=250, ge=1, le=2_500)
+    max_compilation_tokens: int = Field(default=8_000, ge=1, le=32_000)
+
+
 class Settings(BaseSettings):
     """Root settings for ContextOS."""
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
@@ -84,6 +101,7 @@ class Settings(BaseSettings):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
 def load_settings() -> Settings:

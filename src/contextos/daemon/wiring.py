@@ -79,19 +79,25 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     services["optimizer"] = optimizer
 
     # --- Embedding Service ---
-    from contextos.embedding.sentence_transformers import SentenceTransformerEmbedding
-
-    embedding_service = SentenceTransformerEmbedding(
-        model_name=settings.embedding.model,
-        device=settings.embedding.device,
-    )
+    if settings.embedding.model == "deterministic":
+        # Explicit local/test configuration. This avoids a model download while
+        # retaining the normal retrieval, indexing, graph, and SQLite services.
+        from contextos.embedding.deterministic import DeterministicEmbedding
+        embedding_service = DeterministicEmbedding(16)
+        vector_dimension = 16
+    else:
+        from contextos.embedding.sentence_transformers import SentenceTransformerEmbedding
+        embedding_service = SentenceTransformerEmbedding(
+            model_name=settings.embedding.model,
+            device=settings.embedding.device,
+        )
+        vector_dimension = 384
     services["embedding"] = embedding_service
 
     # --- Vector Store ---
     from contextos.storage.vector.in_memory import InMemoryVectorStore
 
-    # Default dimension for all-MiniLM-L6-v2 is 384
-    vector_store = InMemoryVectorStore(dimension=384)
+    vector_store = InMemoryVectorStore(dimension=vector_dimension)
     services["vector_store"] = vector_store
 
     # --- BM25 Index ---
