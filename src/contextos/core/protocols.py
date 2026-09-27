@@ -15,13 +15,22 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
-from contextos.core.enums import MemoryStatus, MemoryType, OptimizationStrategy, SourceRole
+from contextos.core.enums import (
+    GraphRelationType,
+    MemoryStatus,
+    MemoryType,
+    OptimizationStrategy,
+    SourceRole,
+)
 from contextos.core.models import (
     CandidateMemory,
     CompiledContext,
     CompilationConfig,
     ContextBudget,
     EventFilters,
+    GraphEdge,
+    GraphExpansion,
+    GraphNode,
     IngestRequest,
     IngestResult,
     LexicalResult,
@@ -126,6 +135,24 @@ class RelationRepository(Protocol):
         """Delete all relations involving this memory. Returns count deleted."""
         ...
 
+
+@runtime_checkable
+class GraphRepository(Protocol):
+    """Persistence contract for the rebuildable graph projection."""
+
+    async def replace_all(self, nodes: list[GraphNode], edges: list[GraphEdge]) -> None: ...
+
+    async def nodes(self) -> list[GraphNode]: ...
+
+    async def find_nodes(self, canonical_keys: set[str]) -> list[GraphNode]: ...
+
+    async def edges_for_nodes(self, node_ids: set[UUID]) -> list[GraphEdge]: ...
+
+    async def all_edges(self) -> list[GraphEdge]: ...
+
+    async def counts(self) -> tuple[int, int, int]: ...
+
+    async def source_is_dirty(self) -> bool: ...
 
 @runtime_checkable
 class VectorStore(Protocol):
@@ -265,6 +292,39 @@ class TemporalResolver(Protocol):
     async def get_history(self, slot: MemorySlot | str) -> list[Memory]: ...
 
     async def get_previous(self, memory_id: UUID) -> Memory | None: ...
+
+
+@runtime_checkable
+class GraphService(Protocol):
+    """Bounded graph projection and traversal contract."""
+
+    async def rebuild(self) -> tuple[int, int, int]: ...
+
+    async def upsert_memory(self, memory: Memory) -> tuple[int, int, int]: ...
+
+    async def remove_memory(self, memory_id: UUID) -> tuple[int, int, int]: ...
+
+    async def find_entities(self, text: str) -> list[GraphNode]: ...
+
+    async def neighbors(
+        self,
+        node_id: UUID,
+        *,
+        relation_types: set[GraphRelationType] | None = None,
+        min_confidence: float = 0.0,
+    ) -> list[GraphEdge]: ...
+
+    async def expand(
+        self,
+        *,
+        query_text: str,
+        seed_memory_ids: list[UUID] | None = None,
+        max_hops: int = 2,
+        min_confidence: float = 0.6,
+        max_nodes: int = 100,
+        max_edges: int = 250,
+        relation_types: set[GraphRelationType] | None = None,
+    ) -> GraphExpansion: ...
 
 
 # ---------------------------------------------------------------------------

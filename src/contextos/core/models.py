@@ -35,6 +35,8 @@ from contextos.core.enums import (
     PrivacyLevel,
     PrivacySeverity,
     FactExclusionReason,
+    GraphNodeType,
+    GraphRelationType,
     RelationType,
     RetrievalMode,
     SecretType,
@@ -244,6 +246,73 @@ class MemoryRelation(BaseModel):
         return self
 
 
+class GraphNode(BaseModel):
+    """Stable node in the rebuildable property graph."""
+
+    id: UUID
+    node_type: GraphNodeType
+    canonical_key: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class GraphEdgeSupport(BaseModel):
+    """A memory that provides provenance for a derived graph edge."""
+
+    edge_id: UUID
+    memory_id: UUID
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    provenance_event_id: UUID | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class GraphEdge(BaseModel):
+    """Deduplicated typed edge with one or more independent supports."""
+
+    id: UUID
+    source_node_id: UUID
+    target_node_id: UUID
+    relation_type: GraphRelationType
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    directed: bool = True
+    scope_key: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    supports: list[GraphEdgeSupport] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+    @model_validator(mode="after")
+    def edge_is_not_self_referential(self) -> GraphEdge:
+        if self.source_node_id == self.target_node_id:
+            raise ValueError("A graph edge cannot target itself")
+        return self
+
+
+class GraphPath(BaseModel):
+    """Content-free explanation for one graph-derived memory candidate."""
+
+    seed_node_ids: list[UUID]
+    node_ids: list[UUID]
+    node_types: list[GraphNodeType]
+    edge_ids: list[UUID]
+    edge_types: list[GraphRelationType]
+    hop_count: int = Field(ge=1, le=3)
+    graph_contribution: float = Field(ge=0.0, le=1.0)
+    source_memory_ids: list[UUID] = Field(default_factory=list)
+
+
+class GraphExpansion(BaseModel):
+    """Bounded graph traversal result and its safe trace."""
+
+    seed_node_ids: list[UUID] = Field(default_factory=list)
+    candidate_scores: dict[UUID, float] = Field(default_factory=dict)
+    candidate_paths: dict[UUID, list[GraphPath]] = Field(default_factory=dict)
+    visited_node_ids: list[UUID] = Field(default_factory=list)
+    traversed_edge_ids: list[UUID] = Field(default_factory=list)
+
+
 class TemporalChange(BaseModel):
     """Value-free lifecycle mutation included in a temporal trace."""
 
@@ -391,6 +460,9 @@ class ScoredMemory(BaseModel):
     dense_rank: int | None = Field(default=None, ge=1)
     metadata_adjustment: float = Field(default=0.0, ge=0.0)
     retrieval_sources: list[str] = Field(default_factory=list)
+    graph_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    graph_rank: int | None = Field(default=None, ge=1)
+    graph_paths: list[GraphPath] = Field(default_factory=list)
 
 
 class StageTrace(BaseModel):
@@ -440,6 +512,10 @@ class RetrievalQuery(BaseModel):
     min_importance: float | None = Field(default=None, ge=0.0, le=1.0)
     include_trace: bool = True
     apply_metadata_rerank: bool = True
+    graph_max_hops: int = Field(default=2, ge=1, le=3)
+    graph_min_confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+    graph_max_nodes: int = Field(default=100, ge=1, le=1000)
+    graph_max_edges: int = Field(default=250, ge=1, le=2500)
 
     @field_validator("text")
     @classmethod

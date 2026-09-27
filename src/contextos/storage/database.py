@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Schema SQL — Phase 1 initial schema
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -140,6 +140,88 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_relations_unique
 ON memory_relations(source_memory_id, target_memory_id, relation_type);
 """
 
+MIGRATION_3_SQL = """
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    id TEXT PRIMARY KEY,
+    node_type TEXT NOT NULL,
+    canonical_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(node_type, canonical_key)
+);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_key
+ON graph_nodes(canonical_key, node_type);
+
+CREATE TABLE IF NOT EXISTS graph_edges (
+    id TEXT PRIMARY KEY,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    relation_type TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+    directed INTEGER NOT NULL DEFAULT 1,
+    scope_key TEXT NOT NULL DEFAULT '',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (source_node_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_node_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,
+    UNIQUE(source_node_id, target_node_id, relation_type, scope_key)
+);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_source ON graph_edges(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_target ON graph_edges(target_node_id);
+CREATE INDEX IF NOT EXISTS idx_graph_edges_type ON graph_edges(relation_type);
+
+CREATE TABLE IF NOT EXISTS graph_edge_supports (
+    edge_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+    provenance_event_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(edge_id, memory_id),
+    FOREIGN KEY (edge_id) REFERENCES graph_edges(id) ON DELETE CASCADE,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_graph_support_memory
+ON graph_edge_supports(memory_id);
+"""
+
+MIGRATION_4_SQL = """
+-- A persisted dirty bit makes graph freshness checks O(1).  The graph is a
+-- projection, so a crash before it is marked clean merely causes a safe rebuild.
+CREATE TABLE IF NOT EXISTS graph_projection_state (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    dirty INTEGER NOT NULL DEFAULT 1 CHECK(dirty IN (0, 1))
+);
+INSERT OR IGNORE INTO graph_projection_state(singleton, dirty) VALUES (1, 1);
+
+CREATE TRIGGER IF NOT EXISTS trg_graph_dirty_memory_insert
+AFTER INSERT ON memories BEGIN
+    UPDATE graph_projection_state SET dirty = 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_graph_dirty_memory_update
+AFTER UPDATE ON memories BEGIN
+    UPDATE graph_projection_state SET dirty = 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_graph_dirty_memory_delete
+AFTER DELETE ON memories BEGIN
+    UPDATE graph_projection_state SET dirty = 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_graph_dirty_relation_insert
+AFTER INSERT ON memory_relations BEGIN
+    UPDATE graph_projection_state SET dirty = 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_graph_dirty_relation_update
+AFTER UPDATE ON memory_relations BEGIN
+    UPDATE graph_projection_state SET dirty = 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_graph_dirty_relation_delete
+AFTER DELETE ON memory_relations BEGIN
+    UPDATE graph_projection_state SET dirty = 1 WHERE singleton = 1;
+END;
+"""
+
 
 class Database:
     """Manages the SQLite database connection and schema.
@@ -232,6 +314,30 @@ class Database:
                 await self._connection.rollback()
                 raise MigrationError("Failed to apply schema migration 2") from exc
             current_version = 2
+
+        if current_version < 3:
+            try:
+                await self._connection.executescript(
+                    "BEGIN IMMEDIATE;\n" + MIGRATION_3_SQL
+                    + "\nINSERT INTO schema_version (version, description) "
+                    "VALUES (3, 'Memory graph projection and edge provenance');\nCOMMIT;"
+                )
+            except Exception as exc:
+                await self._connection.rollback()
+                raise MigrationError("Failed to apply schema migration 3") from exc
+            current_version = 3
+
+        if current_version < 4:
+            try:
+                await self._connection.executescript(
+                    "BEGIN IMMEDIATE;\n" + MIGRATION_4_SQL
+                    + "\nINSERT INTO schema_version (version, description) "
+                    "VALUES (4, 'Graph projection freshness tracking');\nCOMMIT;"
+                )
+            except Exception as exc:
+                await self._connection.rollback()
+                raise MigrationError("Failed to apply schema migration 4") from exc
+            current_version = 4
 
         if current_version != SCHEMA_VERSION:
             raise MigrationError(

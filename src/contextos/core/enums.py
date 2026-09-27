@@ -124,6 +124,8 @@ class RetrievalMode(StrEnum):
     LEXICAL = "lexical"
     DENSE = "dense"
     HYBRID = "hybrid"
+    GRAPH = "graph"
+    HYBRID_GRAPH = "hybrid_graph"
 
 
 class TemporalScope(StrEnum):
@@ -322,6 +324,36 @@ class RelationType(StrEnum):
 
     PART_OF = "part_of"
     """Source memory is a component of target."""
+
+
+class GraphNodeType(StrEnum):
+    """Node kinds stored in the rebuildable memory graph."""
+
+    MEMORY = "memory"
+    PROJECT = "project"
+    TOOL = "tool"
+    CONCEPT = "concept"
+
+
+class GraphRelationType(StrEnum):
+    """Conservative edge vocabulary for explicit graph facts."""
+
+    ABOUT = "about"
+    MENTIONS = "mentions"
+    USES = "uses"
+    RUNS = "runs"
+    DEPENDS_ON = "depends_on"
+    PART_OF = "part_of"
+    BELONGS_TO = "belongs_to"
+    WORKS_ON = "works_on"
+    SUPERSEDES = "supersedes"
+    CONTRADICTS = "contradicts"
+    CORRECTS = "corrects"
+    COEXISTS_WITH = "coexists_with"
+    DUPLICATE_OF = "duplicate_of"
+    SUPPORTS = "supports"
+    RELATED = "related"
+    DERIVED_FROM = "derived_from"
 
 
 class SecretDetectionMode(StrEnum):

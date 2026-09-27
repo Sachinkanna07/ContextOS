@@ -73,14 +73,24 @@ class HybridRetrievalEngine:
         lexical: list[LexicalResult] = []
         dense: list[VectorResult] = []
 
-        if request.mode in {RetrievalMode.LEXICAL, RetrievalMode.HYBRID}:
+        if request.mode in {
+            RetrievalMode.LEXICAL,
+            RetrievalMode.HYBRID,
+            RetrievalMode.GRAPH,
+            RetrievalMode.HYBRID_GRAPH,
+        }:
             stage_started = time.perf_counter()
             lexical = await self._lexical_index.search(request.text, candidate_limit)
             stages.append(self._stage(
                 "lexical_search", 1, len(lexical), stage_started, {"top_k": candidate_limit}
             ))
 
-        if request.mode in {RetrievalMode.DENSE, RetrievalMode.HYBRID}:
+        if request.mode in {
+            RetrievalMode.DENSE,
+            RetrievalMode.HYBRID,
+            RetrievalMode.GRAPH,
+            RetrievalMode.HYBRID_GRAPH,
+        }:
             stage_started = time.perf_counter()
             vector = await self._embedding_service.embed_query(request.text)
             dense = await self._vector_store.search(vector, candidate_limit)

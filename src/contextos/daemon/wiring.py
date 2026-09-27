@@ -43,16 +43,28 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     memory_repo = SqliteMemoryRepository(conn)
     event_repo = SqliteEventRepository(conn)
     from contextos.storage.relation_repo import SqliteRelationRepository
+    from contextos.storage.graph_repo import SqliteGraphRepository
     relation_repo = SqliteRelationRepository(conn)
+    graph_repo = SqliteGraphRepository(conn)
     services["memory_repo"] = memory_repo
     services["event_repo"] = event_repo
     services["relation_repo"] = relation_repo
+    services["graph_repo"] = graph_repo
 
     # --- Temporal resolution ---
     from contextos.services.temporal import TemporalMemoryService
 
     temporal = TemporalMemoryService(memory_repo)
     services["temporal"] = temporal
+
+    from contextos.services.graph import MemoryGraphService
+
+    graph = MemoryGraphService(
+        memory_repo=memory_repo,
+        relation_repo=relation_repo,
+        graph_repo=graph_repo,
+    )
+    services["graph"] = graph
 
     # --- Token Counter ---
     from contextos.services.token_counter import TiktokenCounter
@@ -145,13 +157,21 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     # --- Retrieval Engine ---
     from contextos.services.retrieval import HybridRetrievalEngine
 
-    retrieval = HybridRetrievalEngine(
+    base_retrieval = HybridRetrievalEngine(
         memory_repo=memory_repo,
         vector_store=vector_store,
         lexical_index=bm25_index,
         embedding_service=embedding_service,
         index_synchronizer=retrieval_index,
     )
+    from contextos.services.graph_retrieval import GraphAugmentedRetrievalEngine
+
+    retrieval = GraphAugmentedRetrievalEngine(
+        base_engine=base_retrieval,
+        graph_service=graph,
+        memory_repo=memory_repo,
+    )
+    services["base_retrieval"] = base_retrieval
     services["retrieval"] = retrieval
 
     # --- Context Compiler ---
