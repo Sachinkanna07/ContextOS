@@ -148,6 +148,15 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     )
     services["ingestion"] = ingestion
 
+    # --- Phase 11: connector state and bounded sync manager ---
+    from contextos.storage.connector_repo import SqliteConnectorRepository
+    from contextos.connectors.manager import ConnectorManager
+    connector_repo = SqliteConnectorRepository(conn)
+    services["connector_repo"] = connector_repo
+    services["connectors"] = ConnectorManager(
+        state_repo=connector_repo, ingestion=ingestion, temporal=temporal,
+    )
+
     # --- Memory Manager ---
     from contextos.services.memory import MemoryManager
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -38,7 +40,16 @@ class SqliteGraphRepository:
             if not edge.supports:
                 raise ValueError("Graph edges require at least one support")
 
-        await self._db.execute("BEGIN IMMEDIATE")
+        for attempt in range(5):
+            try:
+                await self._db.execute("BEGIN IMMEDIATE")
+                break
+            except Exception as exc:
+                msg = str(exc).lower()
+                if attempt < 4 and ("locked" in msg or "busy" in msg or "cannot start a transaction" in msg):
+                    await asyncio.sleep(0.01 * (2 ** attempt))
+                    continue
+                raise
         try:
             await self._db.execute("DELETE FROM graph_edge_supports")
             await self._db.execute("DELETE FROM graph_edges")

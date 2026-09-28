@@ -62,7 +62,7 @@ from contextos.services.token_counter import (
     TiktokenCounter,
     get_token_counter_for_model,
 )
-from contextos.storage.database import Database, SCHEMA_SQL, MIGRATION_2_SQL, MIGRATION_3_SQL, MIGRATION_4_SQL
+from contextos.storage.database import Database, SCHEMA_SQL, SCHEMA_VERSION, MIGRATION_2_SQL, MIGRATION_3_SQL, MIGRATION_4_SQL
 from contextos.storage.telemetry_repo import SqliteTelemetryRepository, sanitize_telemetry_metadata
 
 
@@ -605,10 +605,10 @@ async def test_schema_v4_to_v5_migration_with_real_data():
     db = Database(db_path)
     await db.initialize()
 
-    # 3. Verify schema version is 5
+    # 3. Verify all ordered migrations reach the current supported version.
     async with db.connection().execute("SELECT MAX(version) FROM schema_version") as cursor:
         row = await cursor.fetchone()
-        assert row[0] == 5
+        assert row[0] == SCHEMA_VERSION
 
     # 4. Verify all Phase 8 data survived intact
     async with db.connection().execute("SELECT COUNT(*) FROM memories") as cursor:

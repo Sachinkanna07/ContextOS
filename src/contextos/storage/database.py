@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Schema SQL — Phase 1 initial schema
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -275,6 +275,31 @@ CREATE INDEX IF NOT EXISTS idx_invocations_model ON model_invocations(model_id);
 CREATE INDEX IF NOT EXISTS idx_invocations_is_local ON model_invocations(is_local);
 """
 
+MIGRATION_6_SQL = """
+CREATE TABLE IF NOT EXISTS connector_state (
+    connector_id TEXT PRIMARY KEY,
+    connector_type TEXT NOT NULL,
+    cursor TEXT,
+    last_success_at TEXT,
+    last_attempt_at TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+    status TEXT NOT NULL DEFAULT 'idle',
+    error_code TEXT
+);
+CREATE TABLE IF NOT EXISTS connector_items (
+    connector_id TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    memory_ids TEXT NOT NULL DEFAULT '[]',
+    last_seen_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0, 1)),
+    PRIMARY KEY(connector_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_connector_items_connector ON connector_items(connector_id);
+"""
+
 
 
 class Database:
@@ -404,6 +429,18 @@ class Database:
                 await self._connection.rollback()
                 raise MigrationError("Failed to apply schema migration 5") from exc
             current_version = 5
+
+        if current_version < 6:
+            try:
+                await self._connection.executescript(
+                    "BEGIN IMMEDIATE;\n" + MIGRATION_6_SQL
+                    + "\nINSERT INTO schema_version (version, description) "
+                    "VALUES (6, 'Connector sync state and source item identity');\nCOMMIT;"
+                )
+            except Exception as exc:
+                await self._connection.rollback()
+                raise MigrationError("Failed to apply schema migration 6") from exc
+            current_version = 6
 
 
         if current_version != SCHEMA_VERSION:
