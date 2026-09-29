@@ -174,11 +174,13 @@ def create_app() -> FastAPI:
     from contextos.api.routes.models import router as models_router
     from contextos.api.routes.retrieval import router as retrieval_router
     from contextos.api.routes.system import router as system_router
+    from contextos.api.routes.desktop import router as desktop_router
 
     app.include_router(ingest_router, prefix="/api/v1")
     app.include_router(memories_router, prefix="/api/v1")
     app.include_router(retrieval_router, prefix="/api/v1")
     app.include_router(models_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
+    app.include_router(desktop_router, prefix="/api/v1")
 
     return app

@@ -42,8 +42,13 @@ def is_running(settings: Settings | None = None) -> tuple[bool, int | None]:
         pid = int(pid_path.read_text().strip())
         if psutil.pid_exists(pid):
             proc = psutil.Process(pid)
-            # Verify it's actually our process
-            if proc.is_running() and "contextos" in proc.name().lower() or "python" in proc.name().lower():
+            # A reused PID must never authorize stopping an unrelated Python process.
+            args = proc.cmdline()
+            is_contextos = any(
+                args[index:index + 2] == ["-m", "contextos"]
+                for index in range(len(args) - 1)
+            )
+            if proc.is_running() and is_contextos:
                 return True, pid
         # Stale PID file
         pid_path.unlink(missing_ok=True)

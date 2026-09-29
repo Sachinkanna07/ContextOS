@@ -1016,6 +1016,8 @@ class ModelInvocationTelemetry(BaseModel):
     provider_output_tokens: int = Field(default=0, ge=0)
     provider_total_tokens: int = Field(default=0, ge=0)
     token_measurement_source: TokenMeasurementSource = TokenMeasurementSource.PROVIDER_REPORTED
+    context_token_measurement_source: TokenMeasurementSource | None = None
+    context_tokenizer: str | None = None
 
     # Savings & Reduction
     estimated_full_history_tokens: int | None = None

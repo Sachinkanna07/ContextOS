@@ -7,9 +7,10 @@ Config is loaded from ~/.config/contextos/config.toml (XDG-compliant).
 from __future__ import annotations
 
 import platform
+import re
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -46,6 +47,13 @@ class DaemonConfig(BaseSettings):
     log_level: str = "info"
     data_dir: Path = Field(default_factory=_default_data_dir)
     config_dir: Path = Field(default_factory=_default_config_dir)
+
+    @field_validator("host")
+    @classmethod
+    def loopback_only(cls, value: str) -> str:
+        if value not in {"127.0.0.1", "::1", "localhost"}:
+            raise ValueError("ContextOS daemon must bind to loopback")
+        return value
 
 
 class EmbeddingConfig(BaseSettings):
@@ -94,6 +102,20 @@ class MCPConfig(BaseSettings):
     max_compilation_tokens: int = Field(default=8_000, ge=1, le=32_000)
 
 
+class ConnectorConfig(BaseSettings):
+    """Explicit local sources only; no discovered paths or credentials."""
+
+    local_files: dict[str, list[Path]] = Field(default_factory=dict)
+    json_imports: dict[str, Path] = Field(default_factory=dict)
+
+    @field_validator("local_files", "json_imports")
+    @classmethod
+    def valid_ids(cls, value):
+        if len(value) > 20 or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key) for key in value):
+            raise ValueError("Connector IDs must be short alphanumeric identifiers")
+        return value
+
+
 class Settings(BaseSettings):
     """Root settings for ContextOS."""
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
@@ -102,6 +124,7 @@ class Settings(BaseSettings):
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    connectors: ConnectorConfig = Field(default_factory=ConnectorConfig)
 
 
 def load_settings() -> Settings:
@@ -115,10 +138,7 @@ def load_settings() -> Settings:
             with open(config_file, "rb") as f:
                 data = tomllib.load(f)
             return Settings(**data)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Failed to load config from %s, using defaults", config_file
-            )
+        except Exception as exc:
+            raise ValueError(f"Invalid ContextOS configuration: {config_file}") from exc
 
     return Settings()

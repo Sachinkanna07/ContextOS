@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from contextos.cli.dashboard import safe
 
 from contextos.core.enums import MemoryStatus, PrivacyLevel
 from contextos.core.models import (
@@ -55,7 +56,7 @@ def format_status(status: SystemStatus) -> None:
     table.add_column("Key", style="bold cyan")
     table.add_column("Value")
 
-    running_text = Text("● Running", style="bold green") if status.daemon_running else Text("● Stopped", style="bold red")
+    running_text = Text("[OK] Running", style="bold green") if status.daemon_running else Text("[X] Stopped", style="bold red")
     table.add_row("Status", running_text)
     table.add_row("PID", str(status.pid or "-"))
     table.add_row("Uptime", _format_duration(status.uptime_seconds))
@@ -93,15 +94,15 @@ def format_memory(memory: Memory, detailed: bool = False) -> None:
     """Print a single memory."""
     status_color = STATUS_COLORS.get(memory.status, "white")
 
-    header = f"[bold]{memory.type.value.upper()}[/bold] │ "
+    header = f"[bold]{memory.type.value.upper()}[/bold] | "
     header += f"[{status_color}]{memory.status.value}[/{status_color}]"
-    header += f" │ confidence: {memory.confidence:.0%}"
-    header += f" │ importance: {memory.importance:.0%}"
+    header += f" | confidence: {memory.confidence:.0%}"
+    header += f" | importance: {memory.importance:.0%}"
 
     panel = Panel(
-        memory.content,
+        Text(safe(memory.content, 10_000)),
         title=header,
-        subtitle=f"ID: {str(memory.id)[:8]}… │ {memory.token_count} tokens │ {memory.created_at.strftime('%Y-%m-%d %H:%M')}",
+        subtitle=f"ID: {str(memory.id)[:8]}... | {memory.token_count} tokens | {memory.created_at.strftime('%Y-%m-%d %H:%M')}",
         border_style=status_color,
         padding=(0, 1),
     )
@@ -113,18 +114,18 @@ def format_memory(memory: Memory, detailed: bool = False) -> None:
         detail_table.add_column("Value")
 
         detail_table.add_row("Full ID", str(memory.id))
-        detail_table.add_row("Source", f"{memory.source_type}" + (f" ({memory.source_uri})" if memory.source_uri else ""))
+        detail_table.add_row("Source", Text(safe(f"{memory.source_type} ({memory.source_uri or ''})")))
         detail_table.add_row("Privacy", Text(memory.privacy_level.value, style=PRIVACY_COLORS.get(memory.privacy_level, "white")))
-        detail_table.add_row("Tags", ", ".join(memory.tags) if memory.tags else "-")
+        detail_table.add_row("Tags", Text(safe(", ".join(memory.tags) if memory.tags else "-")))
         detail_table.add_row("Access Count", str(memory.access_count))
         detail_table.add_row("Last Accessed", memory.last_accessed_at.strftime('%Y-%m-%d %H:%M') if memory.last_accessed_at else "-")
         detail_table.add_row("Version", str(memory.version))
         if memory.expires_at:
             detail_table.add_row("Expires", memory.expires_at.strftime('%Y-%m-%d %H:%M'))
         if memory.superseded_by:
-            detail_table.add_row("Superseded By", str(memory.superseded_by)[:8] + "…")
+            detail_table.add_row("Superseded By", str(memory.superseded_by)[:8] + "...")
         if memory.supersedes:
-            detail_table.add_row("Supersedes", str(memory.supersedes)[:8] + "…")
+            detail_table.add_row("Supersedes", str(memory.supersedes)[:8] + "...")
 
         console.print(detail_table)
 
@@ -146,11 +147,11 @@ def format_memory_list(memories: list[Memory]) -> None:
 
     for mem in memories:
         status_color = STATUS_COLORS.get(mem.status, "white")
-        content_preview = mem.content[:57] + "…" if len(mem.content) > 57 else mem.content
+        content_preview = safe(mem.content, 57)
 
         table.add_row(
-            str(mem.id)[:8] + "…",
-            content_preview,
+            str(mem.id)[:8] + "...",
+            Text(content_preview),
             mem.type.value,
             Text(mem.status.value, style=status_color),
             f"{mem.confidence:.0%}",
@@ -164,21 +165,21 @@ def format_memory_list(memories: list[Memory]) -> None:
 def format_ingest_result(result: IngestResult) -> None:
     """Print ingestion result."""
     if result.memories_created:
-        console.print(f"[green]✓[/green] Created {len(result.memories_created)} memor{'y' if len(result.memories_created) == 1 else 'ies'}")
+        console.print(f"[green][OK][/green] Created {len(result.memories_created)} memor{'y' if len(result.memories_created) == 1 else 'ies'}")
         for mid in result.memories_created:
-            console.print(f"  [dim]{str(mid)[:8]}…[/dim]")
+            console.print(f"  [dim]{str(mid)[:8]}...[/dim]")
 
     if result.memories_merged:
-        console.print(f"[cyan]↗[/cyan] Merged into {len(result.memories_merged)} existing memor{'y' if len(result.memories_merged) == 1 else 'ies'}")
+        console.print(f"[cyan][MERGED][/cyan] Merged into {len(result.memories_merged)} existing memor{'y' if len(result.memories_merged) == 1 else 'ies'}")
 
     if result.secrets_detected:
         if result.secrets_redacted:
-            console.print("[yellow]⚠ Secrets detected and redacted[/yellow]")
+            console.print("[yellow][!] Secrets detected and redacted[/yellow]")
         else:
-            console.print("[yellow]⚠ Secrets detected[/yellow]")
+            console.print("[yellow][!] Secrets detected[/yellow]")
 
     for warning in result.warnings:
-        console.print(f"[yellow]⚠ {warning}[/yellow]")
+            console.print(f"[yellow][!] {warning}[/yellow]")
 
 
 def format_retrieval_result(result: RetrievalResult, show_trace: bool = False) -> None:
@@ -187,7 +188,7 @@ def format_retrieval_result(result: RetrievalResult, show_trace: bool = False) -
         console.print("[dim]No memories found.[/dim]")
         return
 
-    console.print(f"\n[bold]Retrieved {len(result.memories)} memories[/bold] for: [italic]{result.query}[/italic]\n")
+    console.print(f"\nRetrieved {len(result.memories)} memories for:", Text(safe(result.query)))
 
     for i, sm in enumerate(result.memories, 1):
         score_text = f"score: {sm.final_score:.4f}"
@@ -200,9 +201,9 @@ def format_retrieval_result(result: RetrievalResult, show_trace: bool = False) -
 
         status_color = STATUS_COLORS.get(sm.memory.status, "white")
         console.print(
-            f"  [{status_color}]{i}.[/{status_color}] {sm.memory.content}"
+            Text(f"  {i}. {safe(sm.memory.content, 10_000)}")
         )
-        console.print(f"     [dim]{score_text} │ {sm.memory.type.value} │ {sm.memory.token_count} tokens[/dim]")
+        console.print(f"     [dim]{score_text} | {sm.memory.type.value} | {sm.memory.token_count} tokens[/dim]")
 
     if show_trace:
         console.print("\n[bold]Pipeline Trace[/bold]")
@@ -229,7 +230,7 @@ def format_retrieval_result(result: RetrievalResult, show_trace: bool = False) -
 
 def format_compiled_context(compiled: CompiledContext, show_context: bool = False) -> None:
     """Print compilation result."""
-    console.print(f"\n[bold]Context Compilation[/bold] for: [italic]{compiled.query}[/italic]\n")
+    console.print("\nContext Compilation for:", Text(safe(compiled.query)))
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Metric", style="cyan")
@@ -244,7 +245,7 @@ def format_compiled_context(compiled: CompiledContext, show_context: bool = Fals
 
     if show_context:
         console.print("\n[bold]Compiled Context:[/bold]")
-        console.print(Panel(compiled.context_text, border_style="green"))
+        console.print(Panel(Text(safe(compiled.context_text, 50_000)), border_style="green"))
 
 
 def format_doctor_results(results: dict) -> None:
@@ -253,7 +254,7 @@ def format_doctor_results(results: dict) -> None:
 
     for check_name, check_result in results.get("checks", {}).items():
         ok = check_result.get("ok", False)
-        icon = "[green]✓[/green]" if ok else "[red]✗[/red]"
+        icon = "[green][OK][/green]" if ok else "[red][X][/red]"
         console.print(f"  {icon} {check_name}")
 
         for key, value in check_result.items():
@@ -261,7 +262,7 @@ def format_doctor_results(results: dict) -> None:
                 continue
             if key == "warnings" and value:
                 for w in value:
-                    console.print(f"      [yellow]⚠ {w}[/yellow]")
+                    console.print(f"      [yellow][!] {w}[/yellow]")
             elif key != "warnings":
                 console.print(f"      [dim]{key}: {value}[/dim]")
 

@@ -13,7 +13,7 @@ ContextOS runs locally as a background daemon and gives any connected LLM persis
 
 ## Status
 
-**Phase 1** — Core pipeline implementation.
+**Phase 12 working tree** — Terminal dashboard and operational commands (uncommitted).
 
 ## Quick Start
 
@@ -38,6 +38,55 @@ contextos compile "Help me set up a new Python project" --show-context
 contextos status
 contextos stats
 ```
+
+## Terminal product
+
+Start the daemon with `contextos start`, then use `contextos monitor` for a live
+dashboard (`--model MODEL` filters one model, `--interval` accepts 0.5–60 seconds).
+On Windows, `contextos desktop` opens the monitor in a separate terminal window.
+The terminal uses the same loopback daemon and SQLite database.
+
+```powershell
+contextos health
+contextos stats --model fake-default
+contextos models list
+contextos memories list
+contextos memories search "coding preferences"
+contextos memories show <memory-uuid>
+"I prefer concise documentation." | contextos memories remember
+contextos preview "Help with documentation" --budget 1000
+contextos connectors list
+contextos connectors status <connector-id>
+contextos connectors sync <connector-id>
+```
+
+The dashboard and memory list show metadata without private memory text.
+`memories show`, `preview --show-context`, and `--json` explicitly reveal content.
+`memories remember` reads stdin or a hidden prompt so memory text stays out of
+process arguments. Connector commands operate only on connectors registered in
+the running daemon. No connector is registered by default.
+
+Register local sources in `%LOCALAPPDATA%\contextos\config.toml` before starting
+the daemon. The roots and import files must already exist; invalid configuration
+stops startup. For example:
+
+```toml
+[connectors.local_files]
+notes = ['C:\Users\me\Documents\notes']
+
+[connectors.json_imports]
+export = 'C:\Users\me\Documents\memory.jsonl'
+```
+
+Preflight and context counts use the target tokenizer or a labeled approximation.
+Provider-reported counts are shown separately. Reduction is a comparison of
+candidate and compiled context counted on the same model basis; it does not
+claim better answer quality or fewer provider-billed tokens. Rows recorded
+before schema v7 have unknown context token measurement provenance.
+
+Run `python -m contextos.benchmarks.terminal` for local CLI, dashboard,
+telemetry, search, and monitor polling latency measurements. These are runtime
+measurements and contain no synthetic token-savings figures.
 
 ## Architecture
 

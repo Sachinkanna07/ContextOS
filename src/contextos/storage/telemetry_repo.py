@@ -117,13 +117,15 @@ class SqliteTelemetryRepository:
             finish_reason,
             status,
             error_code,
-            metadata
+            metadata,
+            context_token_measurement_source,
+            context_tokenizer
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?
+            ?, ?, ?, ?, ?
         )
         """
         params = (
@@ -170,6 +172,8 @@ class SqliteTelemetryRepository:
             telemetry.status,
             telemetry.error_code,
             metadata_json,
+            telemetry.context_token_measurement_source.value if telemetry.context_token_measurement_source else None,
+            telemetry.context_tokenizer,
         )
         await self._conn.execute(sql, params)
         await self._conn.commit()
@@ -183,10 +187,15 @@ class SqliteTelemetryRepository:
                 return None
             return self._row_to_model(row)
 
-    async def list_recent(self, limit: int = 50) -> list[ModelInvocationTelemetry]:
+    async def list_recent(self, limit: int = 50, model_id: str | None = None) -> list[ModelInvocationTelemetry]:
         """List recent invocations in descending chronological order."""
-        sql = "SELECT * FROM model_invocations ORDER BY timestamp DESC LIMIT ?"
-        async with self._conn.execute(sql, (limit,)) as cursor:
+        sql = "SELECT * FROM model_invocations"
+        params: tuple[Any, ...] = (max(1, min(limit, 100)),)
+        if model_id is not None:
+            sql += " WHERE model_id = ?"
+            params = (model_id, *params)
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        async with self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
             return [self._row_to_model(r) for r in rows]
 
@@ -197,12 +206,25 @@ class SqliteTelemetryRepository:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
+    async def context_measurement_bases(self, model_id: str | None = None) -> list[dict[str, str]]:
+        """Distinct provenance bases; unknown legacy rows are preserved as unknown."""
+        sql = """SELECT DISTINCT COALESCE(context_token_measurement_source, 'unknown'),
+                        COALESCE(context_tokenizer, 'unknown') FROM model_invocations WHERE status = 'success'"""
+        params: tuple[str, ...] = ()
+        if model_id is not None:
+            sql += " AND model_id = ?"
+            params = (model_id,)
+        async with self._conn.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+        return [{"source": row[0], "tokenizer": row[1]} for row in rows]
+
     async def summary(
         self,
         start: datetime | None = None,
         end: datetime | None = None,
         provider_id: str | None = None,
         model_id: str | None = None,
+        success_only: bool = False,
     ) -> TelemetrySummary:
         """Compute aggregated token usage, avoidance, and latency statistics."""
         conditions: list[str] = []
@@ -220,6 +242,8 @@ class SqliteTelemetryRepository:
         if model_id is not None:
             conditions.append("model_id = ?")
             params.append(model_id)
+        if success_only:
+            conditions.append("status = 'success'")
 
         where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -352,6 +376,11 @@ class SqliteTelemetryRepository:
             provider_output_tokens=row["provider_output_tokens"],
             provider_total_tokens=row["provider_total_tokens"],
             token_measurement_source=TokenMeasurementSource(row["token_measurement_source"]),
+            context_token_measurement_source=(
+                TokenMeasurementSource(row["context_token_measurement_source"])
+                if row["context_token_measurement_source"] else None
+            ),
+            context_tokenizer=row["context_tokenizer"],
             context_tokens_avoided=row["context_tokens_avoided"],
             reduction_ratio=float(row["reduction_ratio"]),
             lexical_candidate_count=row["lexical_candidate_count"],

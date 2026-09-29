@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Schema SQL — Phase 1 initial schema
 # ---------------------------------------------------------------------------
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -300,6 +300,12 @@ CREATE TABLE IF NOT EXISTS connector_items (
 CREATE INDEX IF NOT EXISTS idx_connector_items_connector ON connector_items(connector_id);
 """
 
+MIGRATION_7_SQL = """
+ALTER TABLE model_invocations ADD COLUMN context_token_measurement_source TEXT;
+ALTER TABLE model_invocations ADD COLUMN context_tokenizer TEXT;
+CREATE INDEX IF NOT EXISTS idx_invocations_model_recent ON model_invocations(model_id, timestamp DESC);
+"""
+
 
 
 class Database:
@@ -441,6 +447,18 @@ class Database:
                 await self._connection.rollback()
                 raise MigrationError("Failed to apply schema migration 6") from exc
             current_version = 6
+
+        if current_version < 7:
+            try:
+                await self._connection.executescript(
+                    "BEGIN IMMEDIATE;\n" + MIGRATION_7_SQL
+                    + "\nINSERT INTO schema_version (version, description) "
+                    "VALUES (7, 'Context token counting provenance');\nCOMMIT;"
+                )
+            except Exception as exc:
+                await self._connection.rollback()
+                raise MigrationError("Failed to apply schema migration 7") from exc
+            current_version = 7
 
 
         if current_version != SCHEMA_VERSION:

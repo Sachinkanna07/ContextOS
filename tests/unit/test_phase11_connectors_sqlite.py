@@ -16,6 +16,7 @@ from contextos.connectors.manager import ConnectorManager
 from contextos.connectors.models import ConnectorItem, RetentionPolicy
 from contextos.core.enums import MemoryStatus, SecretDetectionMode
 from contextos.core.models import CompilationConfig, ContextBudget, RetrievalQuery
+from contextos.storage.database import SCHEMA_VERSION
 from contextos.embedding.deterministic import DeterministicEmbedding
 from contextos.services.compilation import QueryAwareContextCompiler
 from contextos.services.extraction import RuleBasedMemoryExtractor
@@ -753,15 +754,15 @@ async def test_schema_v5_to_v6_real_database_migration(tmp_path: Path):
     raw_conn.commit()
     raw_conn.close()
 
-    # Step 2: Now open the v5 database with ContextOS Database class to trigger v5 -> v6 migration
+    # Step 2: Open the v5 database and apply all later migrations.
     db = Database(db_path)
     await db.initialize()
     conn = db.connection()
 
-    # Verify schema version is now 6
+    # Verify the current schema version.
     async with conn.execute("SELECT MAX(version) FROM schema_version") as cursor:
         row = await cursor.fetchone()
-        assert row[0] == 6
+        assert row[0] == SCHEMA_VERSION
 
     # Verify new tables exist
     async with conn.execute(
@@ -795,12 +796,12 @@ async def test_schema_v5_to_v6_real_database_migration(tmp_path: Path):
 
     await db.close()
 
-    # Step 3: Reopen v6 DB to prove idempotency and usability
+    # Step 3: Reopen the upgraded DB to prove idempotency and usability.
     db_reopened = Database(db_path)
     await db_reopened.initialize()
     async with db_reopened.connection().execute("SELECT MAX(version) FROM schema_version") as cursor:
         row = await cursor.fetchone()
-        assert row[0] == 6
+        assert row[0] == SCHEMA_VERSION
     await db_reopened.close()
 
 

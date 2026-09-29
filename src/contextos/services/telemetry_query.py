@@ -23,8 +23,8 @@ class TelemetryQueryService:
     async def get(self, invocation_id: UUID) -> ModelInvocationTelemetry | None:
         return await self._repo.get(invocation_id)
 
-    async def list_recent(self, limit: int = 50) -> list[ModelInvocationTelemetry]:
-        return await self._repo.list_recent(limit=limit)
+    async def list_recent(self, limit: int = 50, model_id: str | None = None) -> list[ModelInvocationTelemetry]:
+        return await self._repo.list_recent(limit=limit, model_id=model_id)
 
     async def summary_today(self) -> TelemetrySummary:
         """Aggregate telemetry for today (UTC start of day to now)."""
@@ -38,10 +38,12 @@ class TelemetryQueryService:
         end: datetime | None = None,
         provider_id: str | None = None,
         model_id: str | None = None,
+        success_only: bool = False,
     ) -> TelemetrySummary:
         """Aggregate telemetry over an arbitrary time window and filters."""
         return await self._repo.summary(
-            start=start, end=end, provider_id=provider_id, model_id=model_id
+            start=start, end=end, provider_id=provider_id, model_id=model_id,
+            success_only=success_only,
         )
 
     async def by_provider(self, provider_id: str) -> TelemetrySummary:
@@ -51,6 +53,9 @@ class TelemetryQueryService:
     async def by_model(self, model_id: str) -> TelemetrySummary:
         """Aggregate telemetry filtered by model."""
         return await self._repo.summary(model_id=model_id)
+
+    async def context_measurement_bases(self, model_id: str | None = None) -> list[dict[str, str]]:
+        return await self._repo.context_measurement_bases(model_id)
 
     @staticmethod
     def format_terminal_mock(telemetry: ModelInvocationTelemetry) -> dict[str, Any]:

@@ -255,6 +255,8 @@ class ContextOSModelService:
             provider_output_tokens=response.output_tokens,
             provider_total_tokens=response.total_tokens or (response.input_tokens + response.output_tokens),
             token_measurement_source=response.token_measurement_source,
+            context_token_measurement_source=target_counter.measurement_source,
+            context_tokenizer=target_counter.encoding_name,
             context_tokens_avoided=tokens_avoided,
             reduction_ratio=reduction_ratio,
             lexical_candidate_count=lexical_candidate_count,

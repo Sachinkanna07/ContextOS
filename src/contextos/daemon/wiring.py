@@ -26,6 +26,22 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     """
     services: dict[str, Any] = {}
 
+    from contextos.connectors.local_files import LocalFileConnector
+    from contextos.connectors.json_import import JsonImportConnector
+
+    configured_connectors = []
+    for connector_id, roots in settings.connectors.local_files.items():
+        if not roots or any(not root.is_dir() for root in roots):
+            raise ValueError(f"Connector {connector_id} has an invalid local root")
+        configured_connectors.append(LocalFileConnector(connector_id, roots))
+    for connector_id, path in settings.connectors.json_imports.items():
+        if (str(path).startswith(("\\\\", "//")) or
+                str(path.resolve()).startswith(("\\\\", "//")) or not path.is_file()):
+            raise ValueError(f"Connector {connector_id} has an invalid JSON import path")
+        configured_connectors.append(JsonImportConnector(connector_id, path))
+    if len({item.connector_id for item in configured_connectors}) != len(configured_connectors):
+        raise ValueError("Connector IDs must be unique")
+
     # --- Database ---
     data_dir = settings.daemon.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -156,6 +172,8 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     services["connectors"] = ConnectorManager(
         state_repo=connector_repo, ingestion=ingestion, temporal=temporal,
     )
+    for connector in configured_connectors:
+        services["connectors"].register(connector)
 
     # --- Memory Manager ---
     from contextos.services.memory import MemoryManager
