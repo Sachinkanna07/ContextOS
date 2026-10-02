@@ -1,0 +1,36 @@
+# ContextOS Changelog
+
+All notable changes to ContextOS will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0-rc1] - 2026-10-02
+
+### Added
+- **Core Architecture & Persistence:** Local SQLite storage engine (Schema v7) with append-only event logging, memory lifecycle tracking, and deterministic local defaults. The runtime has Python package dependencies but needs no cloud account or model/tokenizer download with those defaults.
+- **Privacy & Security Boundary:** `PatternSecretScanner` detects supported credential shapes across CLI, API, MCP, and connectors; policy rejects, quarantines, or redacts findings. Selected graph/provenance outputs suppress path-shaped labels and terminal sanitization removes control sequences; universal private-path redaction is not a scanner capability. Attack matrix verified against ANSI/OSC escape injection, zero-width chars, malformed JSONL, SQLite contention, and credential leakage.
+- **Temporal Memory:** Slot-key state tracking supporting supersession, contradiction, and coexistence relations with optimized candidate peer lookup beyond 500 records.
+- **Hybrid RAG & Retrieval Engine:** BM25 lexical indexing + dense vector search combined via Reciprocal Rank Fusion (RRF), with batched candidate hydration.
+- **Token-aware Optimizer & Compiler:** Knapsack-based context selection under token budgets with fact/provenance evidence formatting and contextual framing.
+- **Deterministic Memory Graph:** Graph projection engine supporting bounded path traversal, entity/relation links, dirty-state tracking, and opt-in graph-assisted retrieval.
+- **Model Router & Telemetry:** Provider-agnostic router (`FakeProvider`, `Ollama`, `OpenAICompatible`) with per-invocation token telemetry and measurement basis provenance.
+- **Model Context Protocol (MCP):** STDIO protocol implementation (`contextos-mcp`) with permission checks and bounded output schemas.
+- **Connectors System:** Local file and JSON/JSONL connectors with incremental sync, content hashing, and skip invariants for unchanged files.
+- **Terminal UX & Dashboard:** Interactive CLI (`contextos stats`, `monitor`, `desktop`), rich terminal formatting, and diagnostic health checks (`contextos doctor`).
+- **Explainability & RAG Inspector:** Non-intrusive trace generation and context inspection CLI (`contextos inspect`) for single-pass and side-by-side retrieval mode comparison.
+- **Canonical Benchmarking & Evaluation Suite:** Synthetic benchmarking framework (`contextos.benchmarks.final`) evaluating 100 and 1,000 memory corpora across Vector, Hybrid, Hybrid+Graph, and ContextOS strategies.
+- **Packaging & Modular Distribution:** Core `contextos` package decoupled from heavyweight ML frameworks, making `sentence-transformers` an optional extra (`pip install "contextos[embeddings]"`).
+
+### Release blocker repairs
+- Core defaults use hashed deterministic embeddings and word-token accounting labeled `APPROXIMATED`. Optional SentenceTransformer embeddings and exact tiktoken counting require explicit configuration.
+- First-run demo needs no model/tokenizer assets or external network. Startup failure closes the initialized database before propagating the error.
+- Wheel/sdist rules exclude local state and nested checkouts; `python tools/validate_release_artifacts.py` validates rebuilt archives.
+- The canonical synthetic benchmark retains explicit `cl100k_base` counting; token reductions are not provider-billed savings.
+
+### Known limitations
+- Answer quality is **NOT VALIDATED**. Deterministic embeddings are an offline baseline, not a SentenceTransformer-quality claim.
+- Graph retrieval stays opt-in because the current synthetic benchmark shows a ranking/latency tradeoff.
+- Live providers have not been comprehensively validated.
+- Latest independent cold CLI startup: approximately **2.27 seconds median** on Windows.
+- Python 3.12 is declared but not validated; release validation uses Windows/Python 3.13.5.

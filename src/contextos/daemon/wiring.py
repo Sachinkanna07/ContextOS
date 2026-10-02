@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from contextos.config.settings import Settings
 from contextos.core.enums import SecretDetectionMode
 from contextos.storage.database import Database
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from contextos.services.token_counter import TokenCounter
 
 
 async def wire_services(settings: Settings) -> dict[str, Any]:
@@ -24,9 +27,6 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     Returns a dict of {service_name: instance} ready for injection into
     the API server and CLI.
     """
-    services: dict[str, Any] = {}
-    services["settings"] = settings
-
     from contextos.connectors.local_files import LocalFileConnector
     from contextos.connectors.json_import import JsonImportConnector
 
@@ -48,7 +48,20 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     db = Database(data_dir / "contextos.db")
-    await db.initialize()
+    try:
+        await db.initialize()
+        return _wire_initialized_services(settings, db, configured_connectors)
+    except BaseException:
+        # Startup can fail before the caller receives services and owns cleanup.
+        await db.close()
+        raise
+
+
+def _wire_initialized_services(
+    settings: Settings, db: Database, configured_connectors: list[Any],
+) -> dict[str, Any]:
+    """Construct services only after the database has a cleanup owner."""
+    services: dict[str, Any] = {"settings": settings}
     services["database"] = db
 
     conn = db.connection()
@@ -84,9 +97,13 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     services["graph"] = graph
 
     # --- Token Counter ---
-    from contextos.services.token_counter import TiktokenCounter
+    from contextos.services.token_counter import DeterministicWordTokenCounter, TiktokenCounter
 
-    token_counter = TiktokenCounter()
+    token_counter: TokenCounter
+    if settings.token_counter.encoding == "deterministic":
+        token_counter = DeterministicWordTokenCounter()
+    else:
+        token_counter = TiktokenCounter(settings.token_counter.encoding)
     services["token_counter"] = token_counter
 
     # --- Token-aware optimizer ---

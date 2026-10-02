@@ -182,6 +182,10 @@ def get_token_counter_for_model(
     fam = (tokenizer_family or "").lower()
     mid = model_id.lower()
 
+    # FakeProvider's default is an offline simulation, not a real BPE tokenizer.
+    if fam in {"deterministic", "approximation"} or mid == "fake-default":
+        return DeterministicWordTokenCounter()
+
     if "claude" in fam or "claude" in mid or "anthropic" in fam:
         return ClaudeProfileTokenCounter(model_name=model_id)
 
@@ -194,9 +198,6 @@ def get_token_counter_for_model(
             return TiktokenCounter(encoding_name=encoding)
         except Exception:
             return TiktokenCounter("cl100k_base")
-
-    if fam == "deterministic" or fam == "approximation":
-        return DeterministicWordTokenCounter()
 
     # Default fallback: try tiktoken cl100k_base
     try:

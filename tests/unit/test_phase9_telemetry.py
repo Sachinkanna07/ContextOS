@@ -114,7 +114,13 @@ async def test_u_provider_reported_token_usage():
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_v_tokenizer_counted_usage():
-    provider = DeterministicFakeProvider(report_usage=False)
+    from contextos.core.models import ModelCapabilities
+
+    # Exact counting is explicitly requested; the default fake model is offline.
+    provider = DeterministicFakeProvider(report_usage=False, models=[ModelCapabilities(
+        provider_id="fake", model_id="fake-gpt", display_name="Explicit tokenizer fixture",
+        context_window=8192, tokenizer_family="cl100k_base", local=True,
+    )])
     from contextos.core.models import ModelRequest
     req = ModelRequest(user_prompt="Count my tokens with fallback")
     resp = await provider.generate(req)

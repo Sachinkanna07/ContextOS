@@ -17,7 +17,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import psutil  # type: ignore[import-untyped]
 
-from contextos.config.settings import DaemonConfig, EmbeddingConfig, Settings
+from contextos.config.settings import DaemonConfig, EmbeddingConfig, Settings, TokenCounterConfig
 from contextos.core.enums import MemoryStatus, RetrievalMode
 from contextos.core.models import CompilationConfig, ContextBudget, Memory, RetrievalQuery
 from contextos.daemon.wiring import wire_services
@@ -147,6 +147,8 @@ async def _measure_size(size: int, iterations: int) -> dict[str, Any]:
             Settings(
                 daemon=DaemonConfig(data_dir=Path(folder)),
                 embedding=EmbeddingConfig(model="deterministic"),
+                # Preserve the published benchmark's explicit, exact tokenizer basis.
+                token_counter=TokenCounterConfig(encoding="cl100k_base"),
             )
         )
         try:

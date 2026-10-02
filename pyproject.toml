@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "contextos"
-version = "0.1.0"
+version = "1.0.0rc1"
 description = "Local-first personal AI memory runtime"
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["ai", "memory", "rag", "local-first", "context"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
@@ -31,7 +31,6 @@ dependencies = [
     "rich>=13.8.0",
     "aiosqlite>=0.20.0",
     "tiktoken>=0.7.0",
-    "sentence-transformers>=3.0.0",
     "sqlite-vec>=0.1.0",
     "rank-bm25>=0.2.2",
     "numpy>=1.26.0",
@@ -41,6 +40,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+embeddings = [
+    "sentence-transformers>=3.0.0",
+]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
@@ -62,6 +64,21 @@ contextos-mcp = "contextos.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/contextos"]
+
+[tool.hatch.build]
+exclude = [
+    "**/.kilo/**", "**/.git/**", "**/.venv/**", "**/venv/**",
+    "**/.pytest_cache/**", "**/__pycache__/**", "**/.mypy_cache/**", "**/.ruff_cache/**",
+    "**/.idea/**", "**/.vscode/**", "**/worktrees/**", "**/checkouts/**",
+    "**/dist/**", "**/build/**", "**/*.pyc", "**/*.db", "**/*.db-*",
+    "**/*.sqlite", "**/*.sqlite3", "**/.env", "**/.env.*", "**/*scratch*",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/contextos/**", "/tests/**", "/docs/**", "/tools/validate_release_artifacts.py",
+    "/README.md", "/CHANGELOG.md", "/pyproject.toml", "/Makefile",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

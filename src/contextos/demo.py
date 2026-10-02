@@ -12,7 +12,7 @@ from uuid import UUID
 from httpx import ASGITransport, AsyncClient
 
 import contextos.api.server as api_server
-from contextos.config.settings import DaemonConfig, EmbeddingConfig, Settings
+from contextos.config.settings import DaemonConfig, EmbeddingConfig, Settings, TokenCounterConfig
 from contextos.connectors.fake import FakeConnector
 from contextos.connectors.models import ConnectorItem
 from contextos.core.enums import SourceRole
@@ -30,6 +30,7 @@ async def run_demo() -> dict[str, Any]:
             Settings(
                 daemon=DaemonConfig(data_dir=Path(folder)),
                 embedding=EmbeddingConfig(model="deterministic"),
+                token_counter=TokenCounterConfig(encoding="deterministic"),
             )
         )
         try:
@@ -155,6 +156,8 @@ async def run_demo() -> dict[str, Any]:
                 )
             return {
                 "label": "LOCAL SYNTHETIC OFFLINE DEMO",
+                "token_measurement_source": services["token_counter"].measurement_source.value,
+                "tokenizer": services["token_counter"].encoding_name,
                 "initial_memory_ids": initial[:10],
                 "changed_memory_ids": changed[:10],
                 "temporal": {

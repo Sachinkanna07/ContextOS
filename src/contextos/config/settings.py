@@ -9,6 +9,7 @@ from __future__ import annotations
 import platform
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -58,9 +59,15 @@ class DaemonConfig(BaseSettings):
 
 class EmbeddingConfig(BaseSettings):
     """Embedding model configuration."""
-    model: str = "all-MiniLM-L6-v2"
+    model: str = "deterministic"
     device: str = "cpu"
     batch_size: int = 32
+
+
+class TokenCounterConfig(BaseSettings):
+    """Offline approximation by default; exact tokenizers require explicit setup."""
+
+    encoding: Literal["deterministic", "cl100k_base", "o200k_base"] = "deterministic"
 
 
 class RetrievalConfig(BaseSettings):
@@ -120,6 +127,7 @@ class Settings(BaseSettings):
     """Root settings for ContextOS."""
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    token_counter: TokenCounterConfig = Field(default_factory=TokenCounterConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)

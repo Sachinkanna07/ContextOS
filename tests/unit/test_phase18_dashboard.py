@@ -249,3 +249,24 @@ async def test_dashboard_discards_malformed_provider_discovery_entries(tmp_path)
             assert response.json()["models"] == []
     finally:
         await services["database"].close()
+
+
+def test_release_version_and_lazy_optional_dependency_behavior() -> None:
+    from contextos import __version__
+    from contextos.embedding.sentence_transformers import SentenceTransformerEmbedding
+
+    assert __version__ == "1.0.0rc1"
+    st = SentenceTransformerEmbedding()
+    st._model = None  # Force attempt to load
+    # Monkeypatch import error behavior
+    import sys
+    orig = sys.modules.get("sentence_transformers")
+    try:
+        sys.modules["sentence_transformers"] = None  # type: ignore[assignment]
+        with pytest.raises(RuntimeError, match="contextos\\[embeddings\\]"):
+            st._load_model()
+    finally:
+        if orig is not None:
+            sys.modules["sentence_transformers"] = orig
+        else:
+            sys.modules.pop("sentence_transformers", None)

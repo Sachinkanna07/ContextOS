@@ -68,7 +68,7 @@ class DeterministicFakeProvider:
                     supports_json=True,
                     supports_vision=False,
                     local=self._is_local,
-                    tokenizer_family="cl100k_base",
+                    tokenizer_family="deterministic",
                     enabled=True,
                 ),
                 ModelCapabilities(

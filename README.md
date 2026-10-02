@@ -8,10 +8,34 @@ Long conversation histories are expensive and can carry stale or contradictory f
 
 ## Quick start
 
-Python 3.12+ is required. The development installation has been exercised on Windows with Python 3.13; no commercial API key is required for the offline demo.
+Python 3.12+ is declared; this release has been verified on Windows with Python 3.13. Python 3.12 is not yet validated. Core defaults and the offline demo require no commercial API key, model download, or tokenizer cache.
+
+### Installation
+
+Core lightweight installation (uses deterministic/local capabilities):
+```powershell
+pip install contextos
+```
+
+Core defaults use hashed deterministic embeddings and word-token accounting labeled `APPROXIMATED`. These embeddings are an offline baseline; SentenceTransformer retrieval quality is not implied. FakeProvider is a local simulation.
+
+Rebuilt RC1 archives are approximately **220 KB for the wheel** and **300 KB for the sdist** (decimal units). These sizes exclude installed dependencies. Run `python tools/validate_release_artifacts.py` after a rebuild for exact byte counts.
+
+With optional local sentence-transformers embeddings extra:
+```powershell
+pip install "contextos[embeddings]"
+```
+
+Installing the extra does not change defaults. Explicitly set `[embedding]` with `model = "all-MiniLM-L6-v2"` in your ContextOS `config.toml` to select it; first use may download that model unless provisioned locally. Exact context counting is also opt-in: set `[token_counter]` with `encoding = "cl100k_base"` or `"o200k_base"`, and provision its tokenizer cache before offline use. Default `encoding = "deterministic"` needs no tokenizer assets.
+
+For development:
+```powershell
+pip install -e ".[dev]"
+```
+
+### Usage
 
 ```powershell
-python -m pip install -e ".[dev]"
 contextos demo
 contextos start
 contextos doctor
@@ -30,6 +54,8 @@ Input flows through privacy scanning, extraction, temporal acceptance, and SQLit
 See [architecture](docs/architecture.md), [explainability](docs/explainability.md), and [RAG inspector](docs/rag-inspector.md) for exact boundaries. Explainability and inspection describe ContextOS preparation, not an unseen provider wire payload. Provider dispatch is `NOT_ATTEMPTED` during inspection.
 
 ## Privacy and integrations
+
+Secret scanning does not universally redact private filesystem paths. Selected graph/provenance output surfaces suppress path-shaped labels; terminal sanitization removes control sequences. These are separate output protections.
 
 Secrets are scanned before accepted memory is stored; the legacy `--skip-secret-scan` request field does not disable that boundary. Metadata dashboards omit memory bodies, prompts, source paths, and credentials by default. Explicit content-view commands can reveal private text on your terminal; use them deliberately. Local storage is not a substitute for OS disk encryption or trusted local-user access.
 
@@ -57,6 +83,8 @@ Connector status includes currently tracked source-item count; the existing sche
 
 The [benchmark](docs/benchmarking.md) compares full history, vector, hybrid, hybrid+graph, and compiled ContextOS context on ten fixed questions at 100 and 1,000 synthetic memories. It reports relevance ranking and context tokens, not answer quality. The [security](docs/security.md), [performance](docs/performance.md), [demo](docs/demo.md), and [release checklist](docs/release-checklist.md) documents separate measured, simulated, and unverified claims. A 5,000-memory run is opt-in. No cloud deployment or commercial-provider proof is implied by the local test suite.
 
+Answer quality is **NOT VALIDATED**. Live providers have not been comprehensively validated. Graph retrieval stays opt-in because the current synthetic benchmark shows a recall/latency tradeoff. Latest independent cold CLI startup was approximately **2.27 seconds median** on Windows; this is a local measurement, not a guarantee.
+
 ## Development
 
 ```powershell
@@ -67,4 +95,4 @@ python -m pip check
 git diff --check
 ```
 
-`make test`, `make lint`, `make typecheck`, and `make check` are available when `make` is installed. The package is currently version 0.1.0 and no publication is performed by this worktree. License: MIT.
+`make test`, `make lint`, `make typecheck`, and `make check` are available when `make` is installed. The package is currently version 1.0.0-rc1. License: MIT.
