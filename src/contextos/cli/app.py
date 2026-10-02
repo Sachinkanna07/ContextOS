@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from typing import Annotated, Optional
+from typing import Any
 
 import httpx
 import typer
@@ -32,12 +32,14 @@ config_app = typer.Typer(help="Manage configuration", no_args_is_help=True)
 memories_app = typer.Typer(help="Manage memories", no_args_is_help=True)
 connectors_app = typer.Typer(help="Inspect and sync registered connectors", no_args_is_help=True)
 models_app = typer.Typer(help="Inspect registered models", no_args_is_help=True)
+graph_app = typer.Typer(help="Inspect the bounded memory graph", no_args_is_help=True)
 
 app.add_typer(memory_app, name="memory")
 app.add_typer(config_app, name="config")
 app.add_typer(memories_app, name="memories")
 app.add_typer(connectors_app, name="connectors")
 app.add_typer(models_app, name="models")
+app.add_typer(graph_app, name="graph")
 
 console = Console()
 error_console = Console(stderr=True)
@@ -83,7 +85,7 @@ def start(
 ) -> None:
     """Start the ContextOS daemon."""
     from contextos.config.settings import load_settings
-    from contextos.daemon.manager import start_daemon, is_running
+    from contextos.daemon.manager import is_running, start_daemon
 
     settings = load_settings()
     running, pid = is_running(settings)
@@ -126,32 +128,42 @@ def status(
     if json_output:
         console.print_json(json.dumps(data))
     else:
-        from contextos.core.models import SystemStatus
         from contextos.cli.formatters import format_status
+        from contextos.core.models import SystemStatus
         format_status(SystemStatus(**data))
 
 
 @app.command()
 def stats(
-    model: Optional[str] = typer.Option(None, "--model", help="Filter by model ID"),
+    model: str | None = typer.Option(None, "--model", help="Filter by model ID"),
+    provider: str | None = typer.Option(None, "--provider", help="Filter by provider ID"),
+    compare: bool = typer.Option(False, "--compare", help="Show provider/model breakdown"),
+    today: bool = typer.Option(False, "--today", help="Use the current UTC day"),
+    week: bool = typer.Option(False, "--week", help="Use the last seven days"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
     """Show real activity and model-specific token statistics."""
-    resp = _api("GET", "/dashboard", params={"model": model} if model else None)
+    if today and week:
+        raise typer.BadParameter("Choose --today or --week")
+    resp = _api("GET", "/dashboard", params={
+        "model": model, "provider": provider,
+        "period": "today" if today else "week" if week else "all",
+    })
     data = resp.json()
 
     if json_output:
         console.print_json(json.dumps(data))
     else:
         from contextos.cli.dashboard import render_dashboard
-        console.print(render_dashboard(data, model))
+        console.print(render_dashboard(data, model, compare=compare))
 
 
 @app.command()
 def monitor(
-    model: Optional[str] = typer.Option(None, "--model", help="Filter by model ID"),
+    model: str | None = typer.Option(None, "--model", help="Filter by model ID"),
+    provider: str | None = typer.Option(None, "--provider", help="Filter by provider ID"),
     interval: float = typer.Option(2.0, "--interval", min=0.5, max=60.0),
-    samples: Optional[int] = typer.Option(None, "--samples", min=1, max=1000),
+    samples: int | None = typer.Option(None, "--samples", min=1, max=1000),
 ) -> None:
     """Watch bounded local activity until Ctrl-C or the requested sample count."""
     from contextos.cli.dashboard import render_dashboard
@@ -159,7 +171,7 @@ def monitor(
     try:
         with Live(console=console, refresh_per_second=2, screen=False) as live:
             while samples is None or count < samples:
-                data = _api("GET", "/dashboard", params={"model": model} if model else None).json()
+                data = _api("GET", "/dashboard", params={"model": model, "provider": provider}).json()
                 live.update(render_dashboard(data, model), refresh=True)
                 count += 1
                 if samples is None or count < samples:
@@ -214,11 +226,11 @@ def doctor(
 def ingest(
     content: str = typer.Argument(..., help="Content to ingest"),
     source: str = typer.Option("cli_input", "--source", "-s", help="Source type"),
-    source_uri: Optional[str] = typer.Option(None, "--file", help="Source file path"),
-    memory_type: Optional[str] = typer.Option(None, "--type", "-t", help="Memory type hint"),
-    skip_scan: bool = typer.Option(False, "--skip-secret-scan", help="Skip secret detection"),
+    source_uri: str | None = typer.Option(None, "--file", help="Source file path"),
+    memory_type: str | None = typer.Option(None, "--type", "-t", help="Memory type hint"),
+    skip_scan: bool = typer.Option(False, "--skip-secret-scan", help="Deprecated compatibility flag; privacy scanning is always enforced"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
-    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags"),
+    tags: str | None = typer.Option(None, "--tags", help="Comma-separated tags"),
 ) -> None:
     """Ingest content into ContextOS."""
     # Handle file input
@@ -249,8 +261,8 @@ def ingest(
     if json_output:
         console.print_json(json.dumps(data))
     else:
-        from contextos.core.models import IngestResult
         from contextos.cli.formatters import format_ingest_result
+        from contextos.core.models import IngestResult
         format_ingest_result(IngestResult(**data))
 
 
@@ -273,8 +285,8 @@ def retrieve(
     if json_output:
         console.print_json(json.dumps(data))
     else:
-        from contextos.core.models import RetrievalResult
         from contextos.cli.formatters import format_retrieval_result
+        from contextos.core.models import RetrievalResult
         format_retrieval_result(RetrievalResult(**data), show_trace=trace)
 
 
@@ -298,8 +310,8 @@ def compile(
     if json_output:
         console.print_json(json.dumps(data))
     else:
-        from contextos.core.models import CompiledContext
         from contextos.cli.formatters import format_compiled_context
+        from contextos.core.models import CompiledContext
         format_compiled_context(CompiledContext(**data), show_context=show_context)
 
 
@@ -316,8 +328,8 @@ def version() -> None:
 
 @memory_app.command("list")
 def memory_list(
-    status_filter: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status"),
-    type_filter: Optional[str] = typer.Option(None, "--type", "-t", help="Filter by type"),
+    status_filter: str | None = typer.Option(None, "--status", "-s", help="Filter by status"),
+    type_filter: str | None = typer.Option(None, "--type", "-t", help="Filter by type"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max results"),
     json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ) -> None:
@@ -334,8 +346,8 @@ def memory_list(
     if json_output:
         console.print_json(json.dumps(data))
     else:
-        from contextos.core.models import Memory
         from contextos.cli.formatters import format_memory_list
+        from contextos.core.models import Memory
         memories = [Memory(**m) for m in data]
         format_memory_list(memories)
 
@@ -354,14 +366,14 @@ def memory_search(
     if json_output:
         console.print_json(json.dumps(data))
     else:
-        from contextos.core.models import RetrievalResult
         from contextos.cli.formatters import format_retrieval_result
+        from contextos.core.models import RetrievalResult
         format_retrieval_result(RetrievalResult(**data))
 
 
 @memories_app.command("list")
 def memories_list(
-    status_filter: Optional[str] = typer.Option(None, "--status"),
+    status_filter: str | None = typer.Option(None, "--status"),
     limit: int = typer.Option(25, "--limit", min=1, max=100),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -374,6 +386,7 @@ def memories_list(
         console.print_json(json.dumps(rows))
     else:
         from rich.table import Table
+
         from contextos.cli.dashboard import safe
         table = Table(title="Memories - metadata only")
         for column in ("ID", "Type", "Status", "Privacy", "Tokens"):
@@ -397,6 +410,7 @@ def memories_search(
         console.print_json(json.dumps(result))
     else:
         from rich.table import Table
+
         from contextos.cli.dashboard import safe
         table = Table(title="Memory matches - metadata only")
         for column in ("ID", "Type", "Score"):
@@ -439,8 +453,9 @@ def memories_remember() -> None:
 def connectors_list() -> None:
     """List registered connectors and their persisted state."""
     rows = _api("GET", "/connectors").json()
-    from contextos.cli.dashboard import safe
     from rich.table import Table
+
+    from contextos.cli.dashboard import safe
     table = Table(title="Connectors")
     for column in ("ID", "Status", "Enabled", "Error code"):
         table.add_column(column)
@@ -481,8 +496,9 @@ def models_list(json_output: bool = typer.Option(False, "--json")) -> None:
     if json_output:
         console.print_json(json.dumps(rows))
     else:
-        from contextos.cli.dashboard import safe
         from rich.table import Table
+
+        from contextos.cli.dashboard import safe
         table = Table(title="Discoverable models")
         for column in ("Provider", "Model", "Local"):
             table.add_column(column)
@@ -554,7 +570,7 @@ def _print_explanation(result: dict) -> None:
 def explain(query: str = typer.Argument(...), budget: int = typer.Option(1000, "--budget", min=1, max=8000),
             mode: str = typer.Option("hybrid", "--mode"), graph: bool = typer.Option(True, "--graph/--no-graph"),
             limit: int = typer.Option(25, "--limit", min=1, max=100),
-            memory_id: Optional[str] = typer.Option(None, "--memory-id", help="Explain one requested memory when it was observed"),
+            memory_id: str | None = typer.Option(None, "--memory-id", help="Explain one requested memory when it was observed"),
             temporal_scope: str = typer.Option("current", "--temporal-scope"),
             json_output: bool = typer.Option(False, "--json"),
             show_content: bool = typer.Option(False, "--show-content")) -> None:
@@ -570,6 +586,262 @@ def explain(query: str = typer.Argument(...), budget: int = typer.Option(1000, "
         _print_explanation(result)
 
 
+@app.command()
+def inspect(
+    query: str = typer.Argument(...),
+    mode: str = typer.Option("hybrid", "--mode"),
+    graph: bool = typer.Option(False, "--graph/--no-graph"),
+    budget: int = typer.Option(1000, "--budget", min=1, max=8000),
+    limit: int = typer.Option(25, "--limit", min=1, max=100),
+    memory: str | None = typer.Option(None, "--memory"),
+    target_model: str | None = typer.Option(None, "--target-model"),
+    compare: bool = typer.Option(False, "--compare"),
+    show_content: bool = typer.Option(False, "--show-content"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Inspect one bounded context preparation, with optional retrieval comparison."""
+    result = _api("POST", "/inspect", json={
+        "query": query, "mode": mode, "graph": graph, "budget": budget,
+        "limit": limit, "target_memory_id": memory, "target_model": target_model,
+        "compare": compare, "include_content": show_content,
+    }).json()
+    if json_output:
+        console.print_json(json.dumps(result, ensure_ascii=True))
+        return
+    from rich.table import Table
+
+    from contextos.services.explainability import safe_text
+    console.print(Text("ContextOS RAG inspection  " + safe_text(result["inspection_id"], 36)))
+    stages = Table(title="Pipeline")
+    for name in ("Stage", "Input", "Output", "Removed", "Latency ms"):
+        stages.add_column(name)
+    for stage in result["stages"][:20]:
+        stages.add_row(
+            safe_text(stage["name"], 64), str(stage["input_count"]),
+            str(stage["output_count"]), str(stage["removed_count"]),
+            f"{stage['latency_ms']:.2f}",
+        )
+    console.print(stages)
+    diff = result["context_diff"]
+    context = Table(title="Context token diff")
+    context.add_column("Basis")
+    context.add_column("Tokens")
+    for label, key in (("Retrieved", "candidate_tokens"), ("Optimized", "optimized_tokens"),
+                       ("Compiled", "compiled_tokens"), ("Removed", "tokens_removed")):
+        context.add_row(label, str(diff[key]))
+    console.print(context)
+    console.print(Text(
+        f"Reduction {diff['reduction_ratio']:.1%} [{safe_text(diff['token_measurement_source'])}; "
+        f"{safe_text(diff['tokenizer'], 80)}] | facts {diff['facts_emitted']} emitted, "
+        f"{diff['facts_excluded']} excluded | provider {safe_text(result['provider_dispatch']['state'])}"
+    ))
+    candidates = Table(title="Candidates (bounded)")
+    for name in ("Rank", "Memory", "Origin", "BM25", "Dense", "Graph", "Temporal", "Selected", "Compiler"):
+        candidates.add_column(name, overflow="crop")
+    for row in result["candidates"][:limit]:
+        retrieval = row["retrieval"]
+        candidates.add_row(
+            str(row["rank"]), safe_text(row["memory_id"], 36),
+            safe_text(retrieval["origin"], 20), str(retrieval["lexical_rank"] or "-"),
+            str(retrieval["dense_rank"] or "-"), str(retrieval["graph_rank"] or "-"),
+            safe_text(row["temporal"]["status"], 20), str(row["selected"]),
+            safe_text(",".join(row["compiler_transformations"]) or "not available", 50),
+        )
+    console.print(candidates)
+    if result.get("requested_memory"):
+        requested = result["requested_memory"]
+        console.print(Text(
+            f"Memory {safe_text(requested['memory_id'], 36)}: "
+            f"{safe_text(requested['reason_code'], 50)} ({safe_text(requested['reason'], 80)})"
+        ))
+    for row in result["candidates"][:limit]:
+        for path in row["graph"][:5]:
+            nodes = [safe_text(node.get("label") or node["node_type"], 120) for node in path["path_nodes"]]
+            edges = [safe_text(edge["edge_type"], 40) for edge in path["path_edges"]]
+            route = "".join(f" --{edge}--> {nodes[index + 1]}" for index, edge in enumerate(edges)
+                            if index + 1 < len(nodes))
+            if nodes:
+                console.print(Text(f"Graph {safe_text(row['memory_id'], 36)}: {nodes[0]}{route}"))
+    if result.get("comparison"):
+        table = Table(title="Retrieval comparison (no ground truth)")
+        for name in ("Mode", "Candidates", "Overlap", "Latency ms"):
+            table.add_column(name)
+        for run in result["comparison"]["runs"]:
+            table.add_row(safe_text(run["mode"]), str(run["candidate_count"]),
+                          str(run["overlap_with_inspection"]), f"{run['latency_ms']:.2f}")
+        console.print(table)
+    if result.get("content") is not None:
+        console.print(Text(safe_text(result["content"], 20_000)))
+
+
+@app.command()
+def benchmark(
+    extended: bool = typer.Option(False, "--extended"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Run the isolated local synthetic comparison benchmark."""
+    import asyncio
+
+    from contextos.benchmarks.final import measure
+    result = asyncio.run(measure(extended=extended))
+    if json_output:
+        console.print_json(json.dumps(result, ensure_ascii=True))
+        return
+    from rich.table import Table
+    table = Table(title=result["label"])
+    for column in ("Memories", "Strategy", "Recall@5", "MRR", "NDCG@10", "Reduction"):
+        table.add_column(column)
+    for size, corpus in result["corpora"].items():
+        for name, row in corpus["strategies"].items():
+            table.add_row(size, name, f"{row['retrieval']['recall@5']:.3f}",
+                          f"{row['retrieval']['mrr']:.3f}",
+                          f"{row['retrieval']['ndcg@10']:.3f}",
+                          f"{row['weighted_token_reduction']:.1%}" if row["weighted_token_reduction"] is not None else "UNKNOWN")
+    console.print(table)
+    console.print("[BENCHMARKED] Synthetic queries only; answer quality NOT AVAILABLE")
+
+
+@app.command()
+def demo(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Run a disposable offline walkthrough with deterministic services."""
+    import asyncio
+
+    from contextos.demo import run_demo
+    result = asyncio.run(run_demo())
+    if json_output:
+        console.print_json(json.dumps(result, ensure_ascii=True))
+        return
+    from rich.table import Table
+    table = Table(title=result["label"])
+    table.add_column("Stage")
+    table.add_column("Observed result")
+    table.add_row("Temporal", f"{result['temporal']['previous_status']} -> {result['temporal']['current_status']}")
+    table.add_row("Connector", f"{result['connector_first']['accepted']} accepted; {result['connector_second']['unchanged']} unchanged on repeat")
+    table.add_row("Graph", f"{result['graph']['nodes']} nodes, {result['graph']['edges']} edges, {result['graph']['expansion_candidates']} expansion candidates")
+    table.add_row("Inspector", f"{result['inspection']['candidates']} candidates, {result['inspection']['context_diff']['facts_emitted']} facts")
+    table.add_row("Model", f"{result['model']['provider']}/{result['model']['model']}: {result['model']['dispatch_state']}")
+    table.add_row("Privacy", "secret rejected" if result["privacy_secret_rejected"] else "secret was not rejected")
+    console.print(table)
+    console.print("Synthetic data was stored in a temporary directory and removed after the run.")
+
+
+@graph_app.command("stats")
+def graph_stats_cli(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Show persisted graph projection counts and freshness."""
+    data = _api("GET", "/graph/stats").json()
+    if json_output:
+        console.print_json(json.dumps(data, ensure_ascii=True))
+        return
+    from rich.table import Table
+    table = Table(title="Memory graph projection")
+    table.add_column("Metric")
+    table.add_column("Measured value")
+    for label, key in (("Nodes", "nodes"), ("Edges", "edges"), ("Supports", "supports")):
+        table.add_row(label, str(data[key]))
+    table.add_row("Projection", "dirty" if data["dirty"] else "clean")
+    table.add_row("Average total degree", str(data["average_total_degree"]) if data["average_total_degree"] is not None else "UNKNOWN")
+    console.print(table)
+
+
+def _print_graph_paths(data: dict[str, Any]) -> None:
+    from contextos.services.explainability import safe_text
+    console.print(Text(f"Graph candidates: {data['candidate_count']}"))
+    for candidate in data["candidates"][:10]:
+        console.print(Text(f"Memory {safe_text(candidate['memory_id'], 36)} score {candidate['graph_score']:.4f}"))
+        for path in candidate["paths"][:5]:
+            nodes = [safe_text(node.get("label") or node["node_type"], 120) for node in path["path_nodes"]]
+            edges = [safe_text(edge["edge_type"], 40) for edge in path["path_edges"]]
+            route = "".join(f" --{edge}--> {nodes[index+1]}" for index, edge in enumerate(edges)
+                            if index + 1 < len(nodes))
+            if nodes:
+                console.print(Text(nodes[0] + route))
+
+
+@graph_app.command("search")
+def graph_search_cli(entity: str = typer.Argument(...), json_output: bool = typer.Option(False, "--json")) -> None:
+    """Traverse from an entity using the existing bounded graph engine."""
+    data = _api("GET", "/graph/search", params={"entity": entity}).json()
+    if json_output:
+        console.print_json(json.dumps(data, ensure_ascii=True))
+    else:
+        _print_graph_paths(data)
+
+
+@graph_app.command("show")
+def graph_show_cli(memory_id: str = typer.Argument(...), json_output: bool = typer.Option(False, "--json")) -> None:
+    """Traverse graph paths from one memory ID."""
+    from uuid import UUID
+    try:
+        safe_id = str(UUID(memory_id))
+    except ValueError:
+        raise typer.BadParameter("memory_id must be a UUID") from None
+    data = _api("GET", f"/graph/show/{safe_id}").json()
+    if json_output:
+        console.print_json(json.dumps(data, ensure_ascii=True))
+    else:
+        _print_graph_paths(data)
+
+
+def _print_temporal_rows(data: dict[str, Any]) -> None:
+    from rich.table import Table
+
+    from contextos.services.explainability import safe_text
+    rows = data.get("history", data.get("memories", []))
+    table = Table(title="Temporal memory metadata")
+    for name in ("Memory", "Lifecycle", "Temporal", "Observed", "Effective", "Replaced by"):
+        table.add_column(name, overflow="crop")
+    content_lines = []
+    for row in rows[:50]:
+        table.add_row(
+            safe_text(row["memory_id"], 36), safe_text(row["lifecycle"], 20),
+            safe_text(row["temporal_status"], 20), safe_text(row["observed_at"], 32),
+            safe_text(row["effective_at"], 32), safe_text(row["superseded_by"], 36),
+        )
+        if row.get("content") is not None:
+            content_lines.append((safe_text(row["memory_id"], 36), safe_text(row["content"], 1000)))
+    console.print(table)
+    for memory_id, content in content_lines:
+        console.print(Text(f"{memory_id}: {content}"))
+    if data.get("relations"):
+        for relation in data["relations"][:50]:
+            console.print(Text(
+                f"{safe_text(relation['relation_type'], 32)}: "
+                f"{safe_text(relation['related_memory_id'], 36)} "
+                f"({safe_text(relation['related_memory_state'], 20)})"
+            ))
+
+
+@memories_app.command("current")
+def memories_current(limit: int = typer.Option(25, "--limit", min=1, max=50),
+                     json_output: bool = typer.Option(False, "--json")) -> None:
+    """List current memory metadata without private content."""
+    data = _api("GET", "/temporal/current", params={"limit": limit}).json()
+    console.print_json(json.dumps(data, ensure_ascii=True)) if json_output else _print_temporal_rows(data)
+
+
+@memories_app.command("conflicts")
+def memories_conflicts(limit: int = typer.Option(25, "--limit", min=1, max=50),
+                       json_output: bool = typer.Option(False, "--json")) -> None:
+    """List contradicted memory metadata without private content."""
+    data = _api("GET", "/temporal/conflicts", params={"limit": limit}).json()
+    console.print_json(json.dumps(data, ensure_ascii=True)) if json_output else _print_temporal_rows(data)
+
+
+@memories_app.command("history")
+def memories_history(memory_id: str = typer.Argument(...),
+                     show_content: bool = typer.Option(False, "--show-content"),
+                     json_output: bool = typer.Option(False, "--json")) -> None:
+    """Inspect a bounded slot timeline and persisted relation evidence."""
+    from uuid import UUID
+    try:
+        safe_id = str(UUID(memory_id))
+    except ValueError:
+        raise typer.BadParameter("memory_id must be a UUID") from None
+    data = _api("GET", f"/temporal/history/{safe_id}",
+                params={"include_content": show_content}).json()
+    console.print_json(json.dumps(data, ensure_ascii=True)) if json_output else _print_temporal_rows(data)
+
+
 @memory_app.command("inspect")
 def memory_inspect(
     memory_id: str = typer.Argument(..., help="Memory ID"),
@@ -582,8 +854,8 @@ def memory_inspect(
     if json_output:
         console.print_json(json.dumps(data))
     else:
-        from contextos.core.models import Memory
         from contextos.cli.formatters import format_memory
+        from contextos.core.models import Memory
         format_memory(Memory(**data), detailed=True)
 
 

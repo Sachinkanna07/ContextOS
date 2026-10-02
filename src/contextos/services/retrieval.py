@@ -171,6 +171,13 @@ class HybridRetrievalEngine:
     async def _eligible_memories(
         self, ids: set[str], request: RetrievalQuery
     ) -> dict[str, Memory]:
+        get_many = getattr(self._memory_repo, "get_many", None)
+        if callable(get_many):
+            found = await get_many(ids)
+            return {
+                raw_id: memory for raw_id, memory in found.items()
+                if self._eligible(memory, request)
+            }
         eligible: dict[str, Memory] = {}
         for raw_id in sorted(ids):
             try:

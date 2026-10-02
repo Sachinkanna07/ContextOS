@@ -1,119 +1,70 @@
 # ContextOS
 
-**Local-first personal AI memory runtime.**
+ContextOS is a local-first, model-independent AI memory runtime. It is not a chatbot. It accepts activity through a privacy boundary, extracts candidate facts, resolves temporal state, persists memories in SQLite, and supplies bounded context to a chosen model. A local daemon exposes a CLI and API; optional STDIO MCP and explicitly configured connectors use the same memory pipeline.
 
-ContextOS runs locally as a background daemon and gives any connected LLM persistent, personalized memory — while minimizing the number of context tokens sent to that model.
+## Why it exists
 
-## What This Is
+Long conversation histories are expensive and can carry stale or contradictory facts. ContextOS combines lexical and dense retrieval, temporal eligibility, a token-aware selector, and a context compiler. It records what it selected and what it could prove, without claiming that fewer context tokens automatically improve answers or provider billing.
 
-- A **local memory runtime** — not a chatbot, not a RAG framework, not a cloud service.
-- **Model-agnostic** — works with any LLM provider (OpenAI, Anthropic, Ollama, etc.).
-- **Privacy-first** — all data stays local. Secrets are detected and blocked before storage.
-- **Token-efficient** — retrieves and compiles only the most relevant context, measured and benchmarked.
+## Quick start
 
-## Status
+Python 3.12+ is required. The development installation has been exercised on Windows with Python 3.13; no commercial API key is required for the offline demo.
 
-**Phase 13 working tree** — Deterministic retrieval and compilation explanations (uncommitted).
-
-## Quick Start
-
-```bash
-# Install
-pip install -e ".[dev]"
-
-# Start the daemon
+```powershell
+python -m pip install -e ".[dev]"
+contextos demo
 contextos start
-
-# Ingest some context
-contextos ingest "I prefer Python 3.12+ with strict type hints."
-contextos ingest "I use pytest for testing and ruff for linting."
-
-# Retrieve relevant memories
-contextos retrieve "What are my coding preferences?"
-
-# Compile optimized context for an LLM
-contextos compile "Help me set up a new Python project" --show-context
-
-# Explain retrieval and compilation decisions
-contextos explain "What are my coding preferences?"
-
-# Check system status
-contextos status
+contextos doctor
 contextos stats
+"I prefer concise technical explanations." | contextos memories remember
+contextos inspect "What explanation style do I prefer?"
+contextos stop
 ```
+
+The daemon listens on loopback by default. Review your local configuration before changing its host, connector roots, MCP permissions, or provider settings. Prefer `memories remember` for private text: a command-line argument may be visible in process lists and shell history.
+
+## Architecture and memory lifecycle
+
+Input flows through privacy scanning, extraction, temporal acceptance, and SQLite persistence. Retrieval reads the memory store through ephemeral BM25 and dense indexes. The graph is a separate deterministic projection. The optimizer selects within a token budget; the compiler turns selected memories into context with fact/provenance evidence. The router sends the prepared request to a configured local or optional remote provider. Graph-assisted retrieval remains opt-in because its ranking performance is mixed in the local benchmark.
+
+See [architecture](docs/architecture.md), [explainability](docs/explainability.md), and [RAG inspector](docs/rag-inspector.md) for exact boundaries. Explainability and inspection describe ContextOS preparation, not an unseen provider wire payload. Provider dispatch is `NOT_ATTEMPTED` during inspection.
+
+## Privacy and integrations
+
+Secrets are scanned before accepted memory is stored; the legacy `--skip-secret-scan` request field does not disable that boundary. Metadata dashboards omit memory bodies, prompts, source paths, and credentials by default. Explicit content-view commands can reveal private text on your terminal; use them deliberately. Local storage is not a substitute for OS disk encryption or trusted local-user access.
+
+Credential-free local file and JSON/JSONL connectors must be configured explicitly; none are registered by default. See [connectors](docs/connectors.md). MCP is disabled by default, uses STDIO, and separates read, write, and telemetry permissions; see [MCP](docs/mcp.md). Ollama and compatible local endpoints are first-class options; external providers are optional. FakeProvider supports deterministic tests/demo and is identified as simulated.
 
 ## Terminal product
 
-Start the daemon with `contextos start`, then use `contextos monitor` for a live
-dashboard (`--model MODEL` filters one model, `--interval` accepts 0.5–60 seconds).
-On Windows, `contextos desktop` opens the monitor in a separate terminal window.
-The terminal uses the same loopback daemon and SQLite database.
+| Command | Purpose |
+| --- | --- |
+| `contextos status`, `health`, `doctor` | Daemon state and non-destructive diagnostics |
+| `contextos stats [--model ID] [--provider ID] [--compare] [--today/--week]` | Measured activity by provider/model and token basis |
+| `contextos monitor [--model ID] [--provider ID]` | Poll the same bounded local dashboard |
+| `contextos inspect "query" [--mode hybrid] [--graph] [--memory UUID] [--compare] [--json]` | Retrieval-to-compiler decision evidence |
+| `contextos explain "query"`, `preview "query"` | Explain or preview context without provider dispatch |
+| `contextos graph stats/search/show` | Projection statistics and bounded graph paths |
+| `contextos memories current/conflicts/history` | Temporal metadata; content is opt-in |
+| `contextos connectors list/status/sync` | Registered connector state and explicit sync |
+| `contextos models list`, `contextos telemetry` | Provider inventory and measured invocation records |
+| `contextos benchmark [--extended]`, `contextos demo` | Isolated synthetic evaluation and offline walkthrough |
 
-```powershell
-contextos health
-contextos stats --model fake-default
-contextos models list
-contextos memories list
-contextos memories search "coding preferences"
-contextos memories show <memory-uuid>
-"I prefer concise documentation." | contextos memories remember
-contextos preview "Help with documentation" --budget 1000
-contextos connectors list
-contextos connectors status <connector-id>
-contextos connectors sync <connector-id>
-```
+The dashboard groups provider and model together and keeps context-token counts separate from provider-reported usage. A reduction bar appears only when a single known context tokenizer basis can be compared. Older telemetry with unknown provenance is not silently combined. `--today` is the current UTC day; `--week` is a rolling seven-day window. Session-wide history is not yet persisted as a distinct aggregate.
+Connector status includes currently tracked source-item count; the existing schema does not retain last-sync accepted/unchanged/failed totals for historical display.
 
-The dashboard and memory list show metadata without private memory text.
-`memories show`, `preview --show-context`, and `--json` explicitly reveal content.
-`memories remember` reads stdin or a hidden prompt so memory text stays out of
-process arguments. Connector commands operate only on connectors registered in
-the running daemon. No connector is registered by default.
+## Evidence and limits
 
-Register local sources in `%LOCALAPPDATA%\contextos\config.toml` before starting
-the daemon. The roots and import files must already exist; invalid configuration
-stops startup. For example:
-
-```toml
-[connectors.local_files]
-notes = ['C:\Users\me\Documents\notes']
-
-[connectors.json_imports]
-export = 'C:\Users\me\Documents\memory.jsonl'
-```
-
-Preflight and context counts use the target tokenizer or a labeled approximation.
-Provider-reported counts are shown separately. Reduction is a comparison of
-candidate and compiled context counted on the same model basis; it does not
-claim better answer quality or fewer provider-billed tokens. Rows recorded
-before schema v7 have unknown context token measurement provenance.
-
-Run `python -m contextos.benchmarks.terminal` for local CLI, dashboard,
-telemetry, search, and monitor polling latency measurements. These are runtime
-measurements and contain no synthetic token-savings figures.
-
-## Architecture
-
-See [docs/architecture.md](docs/architecture.md) for the full engineering specification.
+The [benchmark](docs/benchmarking.md) compares full history, vector, hybrid, hybrid+graph, and compiled ContextOS context on ten fixed questions at 100 and 1,000 synthetic memories. It reports relevance ranking and context tokens, not answer quality. The [security](docs/security.md), [performance](docs/performance.md), [demo](docs/demo.md), and [release checklist](docs/release-checklist.md) documents separate measured, simulated, and unverified claims. A 5,000-memory run is opt-in. No cloud deployment or commercial-provider proof is implied by the local test suite.
 
 ## Development
 
-```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-make test
-
-# Run linting
-make lint
-
-# Run type checking
-make typecheck
-
-# Run all checks
-make check
+```powershell
+python -m pytest tests -q -ra
+python -m compileall -q src tests
+python -m contextos.benchmarks.final
+python -m pip check
+git diff --check
 ```
 
-## License
-
-MIT
+`make test`, `make lint`, `make typecheck`, and `make check` are available when `make` is installed. The package is currently version 0.1.0 and no publication is performed by this worktree. License: MIT.

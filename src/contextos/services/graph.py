@@ -92,7 +92,7 @@ def _safe_node_label(label: str | None) -> str | None:
     if re.search(
         r"(?i)(?:[a-z]:[\\/]|\\\\|(?:^|\s)/(?:[^/\s]+/)+|"
         r"[a-z][a-z0-9+.-]*://|\b(?:api[_ -]?key|password|passwd|secret|token|authorization)\s*[:=]|"
-        r"\bbearer\s+\S+)",
+        r"\bbearer\s+\S+|\bsk-(?:proj-|ant-)?[a-z0-9_-]{8,}\b)",
         clean,
     ):
         return None
@@ -323,7 +323,9 @@ class MemoryGraphService:
             hop = len(edge_path)
             if hop >= max_hops:
                 continue
-            incident = await self._graph_repo.edges_for_nodes({current})
+            incident = await self._graph_repo.edges_for_nodes(
+                {current}, limit=max_edges - len(traversed)
+            )
             adjacent: list[tuple[GraphEdge, UUID]] = []
             for edge in incident:
                 if edge.confidence < min_confidence:

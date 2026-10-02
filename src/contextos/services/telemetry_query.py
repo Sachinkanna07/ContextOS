@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
-from uuid import UUID
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
-from contextos.core.models import ModelInvocationTelemetry, TelemetrySummary
-from contextos.core.protocols import TelemetryRepository
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from contextos.core.models import ModelInvocationTelemetry, TelemetrySummary
+    from contextos.core.protocols import TelemetryRepository
 
 
 class TelemetryQueryService:
@@ -23,13 +25,23 @@ class TelemetryQueryService:
     async def get(self, invocation_id: UUID) -> ModelInvocationTelemetry | None:
         return await self._repo.get(invocation_id)
 
-    async def list_recent(self, limit: int = 50, model_id: str | None = None) -> list[ModelInvocationTelemetry]:
-        return await self._repo.list_recent(limit=limit, model_id=model_id)
+    async def list_recent(
+        self, limit: int = 50, model_id: str | None = None,
+        provider_id: str | None = None, start: datetime | None = None,
+    ) -> list[ModelInvocationTelemetry]:
+        return await self._repo.list_recent(limit=limit, model_id=model_id,
+                                            provider_id=provider_id, start=start)
+
+    async def provider_model_breakdown(
+        self, start: datetime | None = None, provider_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self._repo.provider_model_breakdown(start, provider_id, model_id)
 
     async def summary_today(self) -> TelemetrySummary:
         """Aggregate telemetry for today (UTC start of day to now)."""
-        now = datetime.now(timezone.utc)
-        start_of_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        now = datetime.now(UTC)
+        start_of_day = datetime(now.year, now.month, now.day, tzinfo=UTC)
         return await self._repo.summary(start=start_of_day, end=now)
 
     async def summary_range(
@@ -54,8 +66,11 @@ class TelemetryQueryService:
         """Aggregate telemetry filtered by model."""
         return await self._repo.summary(model_id=model_id)
 
-    async def context_measurement_bases(self, model_id: str | None = None) -> list[dict[str, str]]:
-        return await self._repo.context_measurement_bases(model_id)
+    async def context_measurement_bases(
+        self, model_id: str | None = None, provider_id: str | None = None,
+        start: datetime | None = None,
+    ) -> list[dict[str, str]]:
+        return await self._repo.context_measurement_bases(model_id, provider_id, start)
 
     @staticmethod
     def format_terminal_mock(telemetry: ModelInvocationTelemetry) -> dict[str, Any]:

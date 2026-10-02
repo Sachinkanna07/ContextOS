@@ -805,7 +805,11 @@ class CandidateMemory(BaseModel):
     def evidence_span_is_valid(self) -> CandidateMemory:
         if (self.evidence_start is None) != (self.evidence_end is None):
             raise ValueError("Evidence start and end must be provided together")
-        if self.evidence_start is not None and self.evidence_end <= self.evidence_start:
+        if (
+            self.evidence_start is not None
+            and self.evidence_end is not None
+            and self.evidence_end <= self.evidence_start
+        ):
             raise ValueError("Evidence end must be greater than evidence start")
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             raise ValueError("valid_to must not be earlier than valid_from")
@@ -891,11 +895,12 @@ class TokenStats(BaseModel):
     """Aggregate token statistics."""
 
     total_tokens_stored: int = 0
-    total_compilations: int = 0
-    total_tokens_compiled: int = 0
-    total_tokens_saved: int = 0
-    average_compression_ratio: float = 0.0
+    total_compilations: int | None = None
+    total_tokens_compiled: int | None = None
+    total_tokens_saved: int | None = None
+    average_compression_ratio: float | None = None
     tokens_per_memory: float = 0.0
+    measurement_basis: str | None = None
 
 
 # ---------------------------------------------------------------------------

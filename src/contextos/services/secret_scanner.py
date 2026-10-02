@@ -79,6 +79,10 @@ SECRET_PATTERNS: list[SecretPattern] = [
              r"\b(?:access[_ -]?token|refresh[_ -]?token)\b\s*(?:is|=|:)\s*"
              r"['\"]?([A-Za-z0-9_./+=-]{12,})['\"]?",
              0.93, "token-assignment", flags=re.I, secret_group=1),
+    _pattern(SecretType.ACCESS_TOKEN,
+             r"[?&](?:x-amz-signature|x-goog-signature|signature|sig)="
+             r"([^&#\s]{16,})",
+             0.95, "signed-url-signature", flags=re.I, secret_group=1),
     _pattern(SecretType.SESSION_COOKIE,
              r"\b(?:session(?:[_ -]?(?:id|token))?|cookie)\b\s*(?:is|=|:)\s*"
              r"['\"]?([A-Za-z0-9_./+=-]{12,})['\"]?",

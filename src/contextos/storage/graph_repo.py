@@ -125,16 +125,22 @@ class SqliteGraphRepository:
         row = await cursor.fetchone()
         return self._node(row) if row else None
 
-    async def edges_for_nodes(self, node_ids: set[UUID]) -> list[GraphEdge]:
-        if not node_ids:
+    async def edges_for_nodes(
+        self, node_ids: set[UUID], *, limit: int | None = None
+    ) -> list[GraphEdge]:
+        if not node_ids or (limit is not None and limit <= 0):
             return []
         raw = tuple(str(value) for value in sorted(node_ids, key=str))
         placeholders = ", ".join("?" for _ in raw)
-        cursor = await self._db.execute(
+        sql = (
             f"SELECT * FROM graph_edges WHERE source_node_id IN ({placeholders}) "
-            f"OR target_node_id IN ({placeholders}) ORDER BY id",
-            raw + raw,
+            f"OR target_node_id IN ({placeholders}) ORDER BY id"
         )
+        params: tuple[object, ...] = raw + raw
+        if limit is not None:
+            sql += " LIMIT ?"
+            params += (limit,)
+        cursor = await self._db.execute(sql, params)
         rows = await cursor.fetchall()
         if not rows:
             return []

@@ -154,7 +154,9 @@ class GraphRepository(Protocol):
 
     async def find_nodes(self, canonical_keys: set[str]) -> list[GraphNode]: ...
 
-    async def edges_for_nodes(self, node_ids: set[UUID]) -> list[GraphEdge]: ...
+    async def edges_for_nodes(
+        self, node_ids: set[UUID], *, limit: int | None = None
+    ) -> list[GraphEdge]: ...
 
     async def all_edges(self) -> list[GraphEdge]: ...
 
@@ -507,9 +509,29 @@ class TelemetryRepository(Protocol):
         """Retrieve a telemetry record by invocation UUID."""
         ...
 
-    async def list_recent(self, limit: int = 50) -> list[ModelInvocationTelemetry]:
+    async def list_recent(
+        self,
+        limit: int = 50,
+        model_id: str | None = None,
+        provider_id: str | None = None,
+        start: datetime | None = None,
+    ) -> list[ModelInvocationTelemetry]:
         """List recent invocations in descending chronological order."""
         ...
+
+    async def provider_model_breakdown(
+        self,
+        start: datetime | None = None,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    async def context_measurement_bases(
+        self,
+        model_id: str | None = None,
+        provider_id: str | None = None,
+        start: datetime | None = None,
+    ) -> list[dict[str, str]]: ...
 
     async def count(self) -> int:
         """Count total recorded invocations."""
@@ -521,6 +543,7 @@ class TelemetryRepository(Protocol):
         end: datetime | None = None,
         provider_id: str | None = None,
         model_id: str | None = None,
+        success_only: bool = False,
     ) -> TelemetrySummary:
         """Compute aggregated token usage, avoidance, and latency statistics."""
         ...

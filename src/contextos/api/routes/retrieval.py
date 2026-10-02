@@ -15,6 +15,7 @@ from contextos.core.models import (
     RetrievalResult,
 )
 from contextos.services.explainability import ExplanationRequest
+from contextos.services.inspection import InspectionRequest
 
 router = APIRouter(tags=["retrieval"])
 
@@ -26,6 +27,11 @@ class ExplainRequest(ExplanationRequest):
 @router.post("/explain")
 async def explain_context(request: ExplainRequest) -> dict:
     return (await get_service("explainability").explain(request)).model_dump(mode="json")
+
+
+@router.post("/inspect")
+async def inspect_context(request: InspectionRequest) -> dict:
+    return (await get_service("inspector").inspect(request)).model_dump(mode="json")
 
 
 class RetrieveRequest(BaseModel):

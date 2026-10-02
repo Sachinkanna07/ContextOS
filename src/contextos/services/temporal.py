@@ -324,15 +324,19 @@ class TemporalMemoryService:
             and memory.temporal_status != CandidateTemporalStatus.FUTURE
         ]
         related = self._latest(current)
-        all_temporal = await self._repository.list_temporal(limit=500)
-        scoped_peer = self._latest([
-            memory for memory in all_temporal
-            if memory.slot is not None
-            and memory.slot.subject == candidate.slot.subject
-            and memory.slot.property == candidate.slot.property
-            and memory.slot.key != candidate.slot.key
-            and memory.status == MemoryStatus.ACTIVE
-        ])
+        if hasattr(self._repository, "latest_active_peer"):
+            scoped_peer = await self._repository.latest_active_peer(candidate.slot)
+        else:
+            # Compatibility for non-SQLite repository implementations.
+            all_temporal = await self._repository.list_temporal(limit=500)
+            scoped_peer = self._latest([
+                memory for memory in all_temporal
+                if memory.slot is not None
+                and memory.slot.subject == candidate.slot.subject
+                and memory.slot.property == candidate.slot.property
+                and memory.slot.key != candidate.slot.key
+                and memory.status == MemoryStatus.ACTIVE
+            ])
 
         if candidate.temporal_status == CandidateTemporalStatus.HISTORICAL:
             return self._decision(

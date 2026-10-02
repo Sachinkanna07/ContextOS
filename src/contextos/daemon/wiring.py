@@ -25,6 +25,7 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     the API server and CLI.
     """
     services: dict[str, Any] = {}
+    services["settings"] = settings
 
     from contextos.connectors.local_files import LocalFileConnector
     from contextos.connectors.json_import import JsonImportConnector
@@ -271,6 +272,8 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     explainability = ExplainabilityService(services)
     services["explainability"] = explainability
     model_service.set_explainability_service(explainability)
+    from contextos.services.inspection import RAGInspector
+    services["inspector"] = RAGInspector(services)
 
     logger.info("All services wired successfully")
     return services

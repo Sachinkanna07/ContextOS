@@ -171,6 +171,11 @@ class ExplainabilityService:
         )
 
     async def explain(self, request: ExplanationRequest) -> ExplanationTrace:
+        trace, _, _, _ = await self.execute(request)
+        return trace
+
+    async def execute(self, request: ExplanationRequest) -> tuple[ExplanationTrace, RetrievalResult, Any, Any]:
+        """Return the trace and its original pipeline objects for bounded inspection."""
         started = time.perf_counter()
         mode = request.mode
         if not request.graph and mode in {RetrievalMode.GRAPH, RetrievalMode.HYBRID_GRAPH}:
@@ -197,7 +202,7 @@ class ExplainabilityService:
         compilation_ms = (time.perf_counter() - compilation_started) * 1000
         pipeline_ms = retrieved.trace.total_latency_ms + optimizer_ms + compilation_ms
 
-        return await self.build_trace(
+        trace = await self.build_trace(
             request=request,
             retrieval_request=retrieval_request,
             retrieved=retrieved,
@@ -207,6 +212,7 @@ class ExplainabilityService:
             started_at=started,
             pipeline_ms=pipeline_ms,
         )
+        return trace, retrieved, selection, compiled
 
     async def build_trace(
         self,

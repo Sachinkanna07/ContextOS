@@ -187,17 +187,79 @@ class SqliteTelemetryRepository:
                 return None
             return self._row_to_model(row)
 
-    async def list_recent(self, limit: int = 50, model_id: str | None = None) -> list[ModelInvocationTelemetry]:
+    async def list_recent(
+        self, limit: int = 50, model_id: str | None = None,
+        provider_id: str | None = None, start: datetime | None = None,
+    ) -> list[ModelInvocationTelemetry]:
         """List recent invocations in descending chronological order."""
-        sql = "SELECT * FROM model_invocations"
-        params: tuple[Any, ...] = (max(1, min(limit, 100)),)
+        sql = "SELECT * FROM model_invocations WHERE 1=1"
+        params: list[Any] = []
         if model_id is not None:
-            sql += " WHERE model_id = ?"
-            params = (model_id, *params)
+            sql += " AND model_id = ?"
+            params.append(model_id)
+        if provider_id is not None:
+            sql += " AND provider_id = ?"
+            params.append(provider_id)
+        if start is not None:
+            sql += " AND timestamp >= ?"
+            params.append(start.isoformat())
         sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(max(1, min(limit, 100)))
         async with self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
             return [self._row_to_model(r) for r in rows]
+
+    async def provider_model_breakdown(
+        self, start: datetime | None = None, provider_id: str | None = None,
+        model_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Group successful context counts by provider, model and tokenizer basis."""
+        conditions = ["1=1"]
+        params: list[Any] = []
+        if start is not None:
+            conditions.append("timestamp >= ?")
+            params.append(start.isoformat())
+        if provider_id is not None:
+            conditions.append("provider_id = ?")
+            params.append(provider_id)
+        if model_id is not None:
+            conditions.append("model_id = ?")
+            params.append(model_id)
+        sql = f"""
+        SELECT provider_id, model_id, is_local,
+               COALESCE(context_token_measurement_source, 'unknown') AS basis,
+               COALESCE(context_tokenizer, 'unknown') AS tokenizer,
+               SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS successful,
+               SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS errors,
+               COALESCE(SUM(CASE WHEN status = 'success' THEN candidate_context_tokens END), 0),
+               COALESCE(SUM(CASE WHEN status = 'success' THEN compiled_context_tokens END), 0),
+               COALESCE(SUM(CASE WHEN status = 'success' THEN context_tokens_avoided END), 0),
+               COALESCE(SUM(CASE WHEN status = 'success' THEN final_input_tokens END), 0),
+               COALESCE(SUM(CASE WHEN status = 'success' THEN provider_input_tokens END), 0),
+               COALESCE(SUM(CASE WHEN status = 'success' THEN provider_output_tokens END), 0),
+               COALESCE(SUM(graph_expanded_count), 0),
+               COALESCE(SUM(selected_memory_count), 0),
+               COALESCE(AVG(retrieval_ms), 0),
+               COALESCE(AVG(compilation_ms), 0),
+               COALESCE(AVG(provider_latency_ms), 0)
+        FROM model_invocations WHERE {' AND '.join(conditions)}
+        GROUP BY provider_id, model_id, is_local, basis, tokenizer
+        ORDER BY successful DESC, provider_id, model_id LIMIT 50
+        """
+        async with self._conn.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+        return [{
+            "provider": row[0], "model": row[1], "local": bool(row[2]),
+            "context_measurement_source": row[3], "context_tokenizer": row[4],
+            "invocations": row[5], "errors": row[6],
+            "candidate_context_tokens": row[7], "compiled_context_tokens": row[8],
+            "context_tokens_avoided": row[9], "preflight_input_tokens": row[10],
+            "provider_input_tokens": row[11], "provider_output_tokens": row[12],
+            "graph_expanded_count": row[13], "selected_memory_count": row[14],
+            "average_retrieval_ms": row[15], "average_compilation_ms": row[16],
+            "average_provider_ms": row[17],
+            "weighted_reduction_ratio": row[9] / row[7] if row[7] else None,
+        } for row in rows]
 
     async def count(self) -> int:
         """Count total recorded invocations."""
@@ -206,14 +268,23 @@ class SqliteTelemetryRepository:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
-    async def context_measurement_bases(self, model_id: str | None = None) -> list[dict[str, str]]:
+    async def context_measurement_bases(
+        self, model_id: str | None = None, provider_id: str | None = None,
+        start: datetime | None = None,
+    ) -> list[dict[str, str]]:
         """Distinct provenance bases; unknown legacy rows are preserved as unknown."""
         sql = """SELECT DISTINCT COALESCE(context_token_measurement_source, 'unknown'),
                         COALESCE(context_tokenizer, 'unknown') FROM model_invocations WHERE status = 'success'"""
-        params: tuple[str, ...] = ()
+        params: list[str] = []
         if model_id is not None:
             sql += " AND model_id = ?"
-            params = (model_id,)
+            params.append(model_id)
+        if provider_id is not None:
+            sql += " AND provider_id = ?"
+            params.append(provider_id)
+        if start is not None:
+            sql += " AND timestamp >= ?"
+            params.append(start.isoformat())
         async with self._conn.execute(sql, params) as cursor:
             rows = await cursor.fetchall()
         return [{"source": row[0], "tokenizer": row[1]} for row in rows]

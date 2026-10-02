@@ -170,6 +170,21 @@ class SqliteMemoryRepository:
             return None
         return _row_to_memory(row)
 
+    async def get_many(self, memory_ids: set[str]) -> dict[str, Memory]:
+        """Hydrate ranked index candidates in bounded SQLite batches."""
+        values: dict[str, Memory] = {}
+        ordered = sorted(memory_ids)
+        for start in range(0, len(ordered), 400):
+            batch = ordered[start:start + 400]
+            placeholders = ", ".join("?" for _ in batch)
+            cursor = await self._db.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders})", batch
+            )
+            for row in await cursor.fetchall():
+                memory = _row_to_memory(row)
+                values[str(memory.id)] = memory
+        return values
+
     async def list(self, filters: MemoryFilters) -> list[Memory]:
         query = "SELECT * FROM memories WHERE 1=1"
         params: list = []
@@ -390,6 +405,23 @@ class SqliteMemoryRepository:
             (limit,),
         )
         return [_row_to_memory(row) for row in await cursor.fetchall()]
+
+    async def latest_active_peer(self, slot: MemorySlot) -> Memory | None:
+        """Find the latest active same-property memory in another scope.
+
+        The old global 500-row temporal scan could silently miss a peer and
+        materialized unrelated private content on every acceptance.
+        """
+        cursor = await self._db.execute(
+            "SELECT * FROM memories WHERE status = ? AND slot_key IS NOT NULL "
+            "AND slot_key != ? AND json_extract(slot_json, '$.subject') = ? "
+            "AND json_extract(slot_json, '$.property') = ? "
+            "ORDER BY COALESCE(valid_from, observed_at, created_at) DESC, "
+            "observed_at DESC, id DESC LIMIT 1",
+            (MemoryStatus.ACTIVE.value, slot.key, slot.subject, slot.property),
+        )
+        row = await cursor.fetchone()
+        return _row_to_memory(row) if row else None
 
     async def apply_temporal_decision(
         self,

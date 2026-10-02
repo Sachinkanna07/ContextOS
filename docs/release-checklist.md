@@ -1,0 +1,17 @@
+# Release-readiness checklist
+
+Closure audit (Windows 11 / Python 3.13): frozen Phase 1–13 regression 624/624; new Phase 14–18 tests 32; full suite 656 passed, 0 failed, 0 skipped. Ruff reports 912 repository findings versus 933 at the frozen baseline; strict Mypy reports 140 versus 150. New Phase 14–18 modules and selected touched paths pass targeted Ruff/Mypy checks without weakening configuration. These Makefile targets are available developer checks, but no automated CI enforcement was found; the remaining findings are inherited debt. A fully isolated `pip install .` attempt ran out of disk during the Torch download. A fresh venv with system site-packages installed the final wheel and passed CLI help, version, and offline demo. Python 3.12 is declared but unavailable on this host. Runtime and benchmark results are local evidence, not production-provider or cross-platform proof.
+
+- [x] Package wheel install and `contextos --help`, `contextos version`, and `contextos demo --json` pass in a fresh Python 3.13 venv using system site-packages. A dependency-isolated install remains unverified because the 124 MB Torch download exhausted available disk space; Python 3.12 is not installed.
+- [ ] On Windows and at least one other supported OS, start/stop the loopback daemon, inspect status and doctor, initialize an empty v7 DB, and test migration from backed-up older DBs. Do not point migration tests at the only live copy.
+- [ ] Exercise CLI memory ingestion, temporal correction/coexistence, retrieve/compile/explain/inspect, graph and dashboard with private text omitted by default.
+- [ ] Configure a real local file and JSON connector with a safe root; verify unchanged repeat, partial failure/cursor retry, deletion policy, and no raw cursor/content leak. No connector is enabled by default.
+- [ ] Enable MCP explicitly and verify STDIO read/write permission separation and no unsolicited provider dispatch.
+- [ ] Verify FakeProvider simulation, local Ollama/OpenAI-compatible routing where available, and any optional remote provider with user-approved credentials. Never put credentials in logs or docs.
+- [x] Frozen regression, new tests, full pytest, compileall, targeted new/touched lint and typing, `git diff --check`, and `pip check` were run locally; see the closure report for counts and scope.
+- [ ] Run all three existing canonical benchmarks and the final synthetic benchmark; separately decide whether a 5,000-memory extended run is affordable. Review quality and latency tradeoffs before changing graph defaults.
+- [ ] Recheck privacy/attack cases, raw prompt/response exclusion, loopback binding, directory permissions, local backup/restore, and schema integrity. Doctor is diagnostic and does not repair data.
+- [ ] Run the offline demo, confirm dashboard measurement-basis labels, and manually validate terminal output under hostile stored text.
+- [ ] Record any unsupported answer-quality, provider-wire, commercial-provider, cross-platform, or production-readiness claims as unknown. No publication, tag, push, release, or live rollout occurs as part of this worktree.
+
+Rollback guidance: stop the daemon, back up the entire SQLite database (including WAL/SHM as applicable, or use SQLite backup API), and restore a verified copy before attempting a migration rollback. Ephemeral indexes and graph projection can be rebuilt from intact source tables; do not delete the only durable DB to address an index warning.
