@@ -38,6 +38,7 @@ from contextos.core.enums import (
     GraphNodeType,
     GraphRelationType,
     ModelFinishReason,
+    ProviderDispatchState,
     ProviderType,
     RelationType,
     RetrievalMode,
@@ -294,6 +295,36 @@ class GraphEdge(BaseModel):
         return self
 
 
+class GraphPathNode(BaseModel):
+    """Structured graph node evidence along a traversed path."""
+
+    node_id: UUID
+    node_type: GraphNodeType
+    label: str | None = None
+    project_scope: str | None = None
+
+
+class GraphPathEdge(BaseModel):
+    """Structured graph edge evidence along a traversed path."""
+
+    edge_type: GraphRelationType
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    supporting_memory_ids: list[UUID] = Field(default_factory=list)
+    project_scope: str | None = None
+
+
+class GraphCandidateEvidence(BaseModel):
+    """Structured explanation connecting a seed memory to a graph candidate."""
+
+    seed_memory_id: UUID | None = None
+    candidate_memory_id: UUID
+    hop_count: int = Field(ge=1, le=3)
+    graph_score: float = Field(ge=0.0, le=1.0)
+    path_nodes: list[GraphPathNode] = Field(default_factory=list)
+    path_edges: list[GraphPathEdge] = Field(default_factory=list)
+    scope_match: bool | None = None
+
+
 class GraphPath(BaseModel):
     """Content-free explanation for one graph-derived memory candidate."""
 
@@ -305,6 +336,9 @@ class GraphPath(BaseModel):
     hop_count: int = Field(ge=1, le=3)
     graph_contribution: float = Field(ge=0.0, le=1.0)
     source_memory_ids: list[UUID] = Field(default_factory=list)
+    path_nodes: list[GraphPathNode] = Field(default_factory=list)
+    path_edges: list[GraphPathEdge] = Field(default_factory=list)
+    scope_match: bool | None = None
 
 
 class GraphExpansion(BaseModel):
@@ -488,6 +522,11 @@ class RetrievalTrace(BaseModel):
     total_latency_ms: float = 0.0
     total_candidates: int = 0
     total_results: int = 0
+    lexical_candidate_ids: list[str] = Field(default_factory=list)
+    dense_candidate_ids: list[str] = Field(default_factory=list)
+    pre_limit_candidate_ids: list[str] = Field(default_factory=list)
+    channel_candidates_truncated: bool = False
+    pre_limit_candidates_truncated: bool = False
 
 
 class RetrievalResult(BaseModel):
@@ -1076,6 +1115,22 @@ class TelemetrySummary(BaseModel):
     by_model: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProviderDispatchEvidence(BaseModel):
+    """Receipt proving exact downstream request construction and dispatch state."""
+
+    provider_id: str
+    model_id: str
+    state: ProviderDispatchState
+    compiled_context_sha256: str
+    logical_request_sha256: str | None = None
+    compiled_context_in_request: bool = False
+    preflight_input_tokens: int = 0
+    provider_input_tokens: int | None = None
+    provider_response_received: bool = False
+    measurement_source: str | None = None
+    context_match: bool = False
+
+
 class AskResult(BaseModel):
     """Result of an end-to-end ContextOSModelService ask execution."""
 
@@ -1083,3 +1138,5 @@ class AskResult(BaseModel):
     compiled_context: CompiledContext
     route_decision: RouteDecision
     telemetry: ModelInvocationTelemetry
+    dispatch_evidence: ProviderDispatchEvidence | None = None
+    explanation: dict[str, Any] | None = None

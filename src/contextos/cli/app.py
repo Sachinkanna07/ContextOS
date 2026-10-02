@@ -495,9 +495,14 @@ def models_list(json_output: bool = typer.Option(False, "--json")) -> None:
 
 @app.command()
 def preview(query: str = typer.Argument(...), budget: int = typer.Option(4000, "--budget", min=1, max=32000),
-            show_context: bool = typer.Option(False, "--show-context")) -> None:
+            show_context: bool = typer.Option(False, "--show-context"),
+            explain: bool = typer.Option(False, "--explain")) -> None:
     """Preview selected memories and provenance without invoking a model."""
     from contextos.cli.dashboard import safe
+    if explain:
+        result = _api("POST", "/explain", json={"query": query, "budget": min(budget, 8000), "include_content": show_context}).json()
+        _print_explanation(result)
+        return
     result = _api("POST", "/compile", json={"query": query, "config": {"budget": budget}}).json()
     console.print(f"Compiled {result['total_tokens']} / {result['budget']} tokens")
     console.print(f"Selected {result['memories_included']} of {result['memories_considered']} memories")
@@ -510,6 +515,59 @@ def preview(query: str = typer.Argument(...), budget: int = typer.Option(4000, "
             console.print(Text(f"{safe(fact['fact_id'])}: {safe(fact['reason'])}"))
     if show_context:
         console.print(Text(safe(result["context_text"], 50_000, allow_newlines=True)))
+
+
+def _print_explanation(result: dict) -> None:
+    from contextos.services.explainability import safe_text
+    console.print(f"QUERY TRACE {safe_text(result.get('trace_id'), 36)}")
+    for row in result.get("candidates", [])[:100]:
+        retrieval = row.get("retrieval", {})
+        temporal = row.get("temporal", {})
+        optimizer = row.get("optimizer", {})
+        console.print(f"[{row.get('rank', '?')}] Memory {safe_text(row.get('memory_id'), 36)}")
+        console.print(f"    retrieved: {safe_text(retrieval.get('origin'))} rank {row.get('rank')}")
+        console.print(f"    temporal: {safe_text(temporal.get('status'))}; eligible={temporal.get('eligible')}")
+        graph_paths = row.get("graph", [])
+        graph_labels = []
+        for gp in graph_paths:
+            for pn in gp.get("path_nodes", []):
+                if pn.get("label"):
+                    graph_labels.append(pn["label"])
+        label_str = f"; entities={','.join(graph_labels[:3])}" if graph_labels else ""
+        console.print(f"    graph: {len(graph_paths)} path(s); tokens={row.get('token_cost')}{label_str}")
+        console.print(f"    optimizer: {'selected' if row.get('selected') else 'excluded'}; reason={safe_text(optimizer.get('reason'))}")
+        if row.get("content") is not None:
+            console.print(Text(safe_text(row["content"], 1000)))
+    if result.get("content") is not None:
+        console.print("Compiled context:")
+        console.print(Text(safe_text(result["content"], 20_000)))
+    if result.get("requested_memory") is not None:
+        console.print("Requested memory: " + json.dumps(result["requested_memory"], ensure_ascii=True))
+    dispatch = result.get("provider_dispatch", {})
+    state = dispatch.get("state", "NOT_ATTEMPTED")
+    console.print(f"Provider dispatch: {safe_text(state, 32)}")
+    console.print("Final context: prepared by ContextOS")
+    console.print("Final context stats: " + json.dumps(result.get("final_context", {}), ensure_ascii=True))
+
+
+@app.command()
+def explain(query: str = typer.Argument(...), budget: int = typer.Option(1000, "--budget", min=1, max=8000),
+            mode: str = typer.Option("hybrid", "--mode"), graph: bool = typer.Option(True, "--graph/--no-graph"),
+            limit: int = typer.Option(25, "--limit", min=1, max=100),
+            memory_id: Optional[str] = typer.Option(None, "--memory-id", help="Explain one requested memory when it was observed"),
+            temporal_scope: str = typer.Option("current", "--temporal-scope"),
+            json_output: bool = typer.Option(False, "--json"),
+            show_content: bool = typer.Option(False, "--show-content")) -> None:
+    """Explain retrieval, selection, and compilation using recorded pipeline signals."""
+    result = _api("POST", "/explain", json={"query": query, "budget": budget, "mode": mode,
+                                             "graph": graph, "limit": limit,
+                                             "target_memory_id": memory_id,
+                                             "temporal_scope": temporal_scope,
+                                             "include_content": show_content}).json()
+    if json_output:
+        console.print_json(json.dumps(result, ensure_ascii=True))
+    else:
+        _print_explanation(result)
 
 
 @memory_app.command("inspect")

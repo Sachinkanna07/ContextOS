@@ -14,8 +14,18 @@ from contextos.core.models import (
     RetrievalQuery,
     RetrievalResult,
 )
+from contextos.services.explainability import ExplanationRequest
 
 router = APIRouter(tags=["retrieval"])
+
+
+class ExplainRequest(ExplanationRequest):
+    """Bounded request for deterministic pipeline explanation."""
+
+
+@router.post("/explain")
+async def explain_context(request: ExplainRequest) -> dict:
+    return (await get_service("explainability").explain(request)).model_dump(mode="json")
 
 
 class RetrieveRequest(BaseModel):

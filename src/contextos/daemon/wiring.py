@@ -121,6 +121,7 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
 
     bm25_index = BM25Index()
     services["bm25_index"] = bm25_index
+    services["lexical_index"] = bm25_index
 
     # --- Explicit retrieval index synchronization ---
     from contextos.services.retrieval_index import RetrievalIndexSynchronizer
@@ -265,6 +266,11 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
         token_counter=token_counter,
     )
     services["model_service"] = model_service
+
+    from contextos.services.explainability import ExplainabilityService
+    explainability = ExplainabilityService(services)
+    services["explainability"] = explainability
+    model_service.set_explainability_service(explainability)
 
     logger.info("All services wired successfully")
     return services

@@ -15,11 +15,14 @@ from contextos.core.enums import (
     MemoryStatus,
 )
 from contextos.core.models import (
+    GraphCandidateEvidence,
     GraphEdge,
     GraphEdgeSupport,
     GraphExpansion,
     GraphNode,
     GraphPath,
+    GraphPathEdge,
+    GraphPathNode,
     Memory,
     MemoryFilters,
 )
@@ -79,6 +82,22 @@ def stable_edge_id(
     source: UUID, target: UUID, relation: GraphRelationType, scope_key: str | None,
 ) -> UUID:
     return uuid5(GRAPH_NAMESPACE, f"edge:{source}:{target}:{relation.value}:{scope_key or ''}")
+
+
+def _safe_node_label(label: str | None) -> str | None:
+    if not label or label.startswith("memory:"):
+        return None
+    clean = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x1b\x07]*(?:\x07|\x1b\\)|.)", "", label)
+    clean = "".join(c for c in clean if c.isprintable() and not (0x202A <= ord(c) <= 0x2069))[:120].strip()
+    if re.search(
+        r"(?i)(?:[a-z]:[\\/]|\\\\|(?:^|\s)/(?:[^/\s]+/)+|"
+        r"[a-z][a-z0-9+.-]*://|\b(?:api[_ -]?key|password|passwd|secret|token|authorization)\s*[:=]|"
+        r"\bbearer\s+\S+)",
+        clean,
+    ):
+        return None
+    return clean or None
+
 
 
 @dataclass(frozen=True)
@@ -296,11 +315,11 @@ class MemoryGraphService:
         visited: set[UUID] = set(seed_ids)
         traversed: set[UUID] = set()
         queue = deque(
-            (seed, [seed], [], 1.0, self._seed_scope(all_nodes.get(seed)))
+            (seed, seed, [seed], [], 1.0, self._seed_scope(all_nodes.get(seed)))
             for seed in sorted(seed_ids, key=str)
         )
         while queue and len(visited) <= max_nodes and len(traversed) < max_edges:
-            current, node_path, edge_path, strength, scope = queue.popleft()
+            seed, current, node_path, edge_path, strength, scope = queue.popleft()
             hop = len(edge_path)
             if hop >= max_hops:
                 continue
@@ -337,10 +356,51 @@ class MemoryGraphService:
                     if neighbor_node is not None:
                         all_nodes[neighbor] = neighbor_node
                 support_ids = sorted({item.memory_id for item in edge.supports}, key=str)
+                path_nodes: list[GraphPathNode] = []
+                for n_id in new_nodes:
+                    n_obj = all_nodes.get(n_id)
+                    if n_obj is not None:
+                        label = _safe_node_label(n_obj.label)
+                        project_scope = (
+                            _safe_node_label(n_obj.canonical_key)
+                            if n_obj.node_type == GraphNodeType.PROJECT else None
+                        )
+                        path_nodes.append(GraphPathNode(
+                            node_id=n_obj.id,
+                            node_type=n_obj.node_type,
+                            label=label,
+                            project_scope=project_scope,
+                        ))
+                    else:
+                        path_nodes.append(GraphPathNode(
+                            node_id=n_id,
+                            node_type=GraphNodeType.MEMORY,
+                            label=None,
+                            project_scope=None,
+                        ))
+
+                path_edges: list[GraphPathEdge] = []
+                for e_obj in new_edges:
+                    path_edges.append(GraphPathEdge(
+                        edge_type=e_obj.relation_type,
+                        confidence=e_obj.confidence,
+                        supporting_memory_ids=sorted({s.memory_id for s in e_obj.supports}, key=str),
+                        project_scope=_safe_node_label(e_obj.scope_key),
+                    ))
+
+                scope_participated = any(e.project_scope is not None for e in path_edges) or any(
+                    n.project_scope is not None for n in path_nodes
+                )
+                scope_match = None
+                if scope_participated and scope is not None:
+                    scope_match = any(e.project_scope == scope for e in path_edges) or any(
+                        n.project_scope == scope for n in path_nodes
+                    )
+
                 for memory_id in support_ids:
                     candidate_scores[memory_id] = max(candidate_scores.get(memory_id, 0.0), contribution)
                     candidate_paths[memory_id].append(GraphPath(
-                        seed_node_ids=sorted(seed_ids, key=str),
+                        seed_node_ids=[seed],
                         node_ids=new_nodes,
                         node_types=[all_nodes[node].node_type for node in new_nodes if node in all_nodes],
                         edge_ids=[item.id for item in new_edges],
@@ -348,10 +408,13 @@ class MemoryGraphService:
                         hop_count=next_hop,
                         graph_contribution=contribution,
                         source_memory_ids=support_ids,
+                        path_nodes=path_nodes,
+                        path_edges=path_edges,
+                        scope_match=scope_match,
                     ))
                 if neighbor not in visited and len(visited) < max_nodes:
                     visited.add(neighbor)
-                    queue.append((neighbor, new_nodes, new_edges, contribution, next_scope))
+                    queue.append((seed, neighbor, new_nodes, new_edges, contribution, next_scope))
 
         return GraphExpansion(
             seed_node_ids=sorted(seed_ids, key=str), candidate_scores=candidate_scores,

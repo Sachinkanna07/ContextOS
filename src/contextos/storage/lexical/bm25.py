@@ -45,6 +45,13 @@ class BM25Index:
         self._documents: dict[str, list[str]] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
 
+    def contains(self, doc_id: str | Any) -> bool:
+        """Check whether a document ID is present in the lexical index."""
+        return str(doc_id) in self._documents
+
+    def __contains__(self, doc_id: str | Any) -> bool:
+        return str(doc_id) in self._documents
+
     async def index(
         self, doc_id: str, text: str, metadata: dict[str, Any] | None = None
     ) -> None:

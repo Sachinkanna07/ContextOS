@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any
 from uuid import uuid4
 
-from contextos.core.enums import ModelFinishReason, RoutingPolicy, TokenMeasurementSource
+from contextos.core.enums import (
+    ModelFinishReason,
+    ProviderDispatchState,
+    RetrievalMode,
+    RoutingPolicy,
+    TemporalScope,
+    TokenMeasurementSource,
+)
 from contextos.core.models import (
     AskResult,
     CompilationConfig,
@@ -16,7 +24,9 @@ from contextos.core.models import (
     ModelInvocationTelemetry,
     ModelRequest,
     ModelResponse,
+    ProviderDispatchEvidence,
     RetrievalConfig,
+    RetrievalQuery,
     RouteDecision,
 )
 from contextos.core.protocols import (
@@ -50,6 +60,7 @@ class ContextOSModelService:
         providers: dict[str, ModelProvider],
         telemetry_repo: TelemetryRepository,
         token_counter: TokenCounter,
+        explainability_service: Any = None,
     ) -> None:
         self._retrieval = retrieval_service
         self._optimizer = optimizer
@@ -58,6 +69,10 @@ class ContextOSModelService:
         self._providers = dict(providers)
         self._telemetry = telemetry_repo
         self._token_counter = token_counter
+        self._explainability = explainability_service
+
+    def set_explainability_service(self, explainability_service: Any) -> None:
+        self._explainability = explainability_service
 
     def register_provider(self, provider: ModelProvider) -> None:
         """Register or replace a provider adapter."""
@@ -85,6 +100,7 @@ class ContextOSModelService:
         required_capabilities: list[str] | None = None,
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        explain: bool = False,
     ) -> AskResult:
         """Execute end-to-end query -> retrieval -> optimization -> compilation -> routing -> generation -> telemetry."""
         total_started = time.perf_counter()
@@ -196,13 +212,66 @@ class ContextOSModelService:
         model_req.provider = route_decision.selected_provider
 
         # -------------------------------------------------------------------
+        # 5b. Request Construction & Fingerprinting (Provider Dispatch Receipt)
+        # -------------------------------------------------------------------
+        context_str = compiled_context.context_text or ""
+        compiled_context_sha256 = hashlib.sha256(context_str.encode("utf-8")).hexdigest()
+        # This is the actual ModelRequest handed to the provider adapter, not its
+        # provider-specific HTTP payload (which each adapter constructs later).
+        actual_req_context = (
+            model_req.compiled_context.context_text
+            if model_req.compiled_context and model_req.compiled_context.context_text
+            else ""
+        )
+        context_match = bool(
+            (context_str == actual_req_context)
+            and (context_str == "" or context_str in actual_req_context)
+        )
+        compiled_context_in_request = context_match
+        request_payload_representation = (
+            f"system:{model_req.system_prompt or ''}\n"
+            f"context:{actual_req_context}\n"
+            f"prompt:{model_req.user_prompt}"
+        )
+        logical_request_sha256 = hashlib.sha256(
+            request_payload_representation.encode("utf-8")
+        ).hexdigest()
+
+        dispatch_evidence = ProviderDispatchEvidence(
+            provider_id=chosen_provider.provider_id,
+            model_id=route_decision.selected_model,
+            state=ProviderDispatchState.REQUEST_CONSTRUCTED,
+            compiled_context_sha256=compiled_context_sha256,
+            logical_request_sha256=logical_request_sha256,
+            compiled_context_in_request=compiled_context_in_request,
+            preflight_input_tokens=preflight_input_tokens,
+            provider_input_tokens=None,
+            provider_response_received=False,
+            measurement_source=None,
+            context_match=context_match,
+        )
+
+        # -------------------------------------------------------------------
         # 6. Downstream Provider Generation
         # -------------------------------------------------------------------
+        dispatch_evidence.state = ProviderDispatchState.DISPATCH_ATTEMPTED
         gen_exc: Exception | None = None
         try:
             response = await chosen_provider.generate(model_req)
+            if response.finish_reason == ModelFinishReason.ERROR or response.error:
+                dispatch_evidence.state = ProviderDispatchState.DISPATCH_FAILED
+                dispatch_evidence.provider_response_received = False
+            else:
+                dispatch_evidence.state = ProviderDispatchState.RESPONSE_RECEIVED
+                dispatch_evidence.provider_response_received = True
+                dispatch_evidence.provider_input_tokens = response.input_tokens
+                dispatch_evidence.measurement_source = (
+                    response.token_measurement_source.value if response.token_measurement_source else None
+                )
         except Exception as exc:
             gen_exc = exc
+            dispatch_evidence.state = ProviderDispatchState.DISPATCH_FAILED
+            dispatch_evidence.provider_response_received = False
             # Synthesize safe failure response for failure telemetry persistence
             response = ModelResponse(
                 text="",
@@ -290,8 +359,44 @@ class ContextOSModelService:
         except Exception as tel_exc:
             logger.error("Failed to persist model invocation telemetry: %s", tel_exc)
 
+        explanation_data: dict[str, Any] | None = None
+        if explain and self._explainability is not None:
+            try:
+                from contextos.services.explainability import ExplanationRequest
+                exp_req = ExplanationRequest(
+                    query=query,
+                    budget=comp_cfg.budget,
+                    limit=retrieval_config.max_results if retrieval_config else 25,
+                    temporal_scope=(
+                        TemporalScope(retrieval_config.temporal_scope.value)
+                        if retrieval_config and hasattr(retrieval_config, "temporal_scope")
+                        else TemporalScope.CURRENT
+                    ),
+                    graph=True,
+                )
+                trace = await self._explainability.build_trace(
+                    request=exp_req,
+                    retrieval_request=RetrievalQuery(
+                        text=query,
+                        mode=RetrievalMode.HYBRID_GRAPH,
+                        k=retrieval_config.max_results if retrieval_config else 25,
+                    ),
+                    retrieved=retrieval_result,
+                    selection=selection,
+                    compiled=compiled_context,
+                    dispatch_evidence=dispatch_evidence,
+                    started_at=total_started,
+                    pipeline_ms=retrieval_ms + optimization_ms + compilation_ms,
+                )
+                explanation_data = trace.model_dump(mode="json")
+            except Exception as e:
+                logger.warning("Failed to build explanation in ask(): %s", e)
+
         if gen_exc is not None:
-            # Re-raise provider generation exception after safe telemetry is recorded
+            # Attach observable dispatch evidence, explanation, and telemetry before re-raising
+            setattr(gen_exc, "dispatch_evidence", dispatch_evidence)
+            setattr(gen_exc, "explanation", explanation_data)
+            setattr(gen_exc, "telemetry", telemetry)
             raise gen_exc
 
         return AskResult(
@@ -299,4 +404,6 @@ class ContextOSModelService:
             compiled_context=compiled_context,
             route_decision=route_decision,
             telemetry=telemetry,
+            dispatch_evidence=dispatch_evidence,
+            explanation=explanation_data,
         )

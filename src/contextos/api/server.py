@@ -42,6 +42,14 @@ def get_service(name: str) -> Any:
     return _services[name]
 
 
+def _dispatch_error_payload(exc: Exception) -> dict[str, Any]:
+    """Expose bounded dispatch evidence without echoing provider request content."""
+    evidence = getattr(exc, "dispatch_evidence", None)
+    if evidence is None:
+        return {}
+    return {"dispatch_evidence": evidence.model_dump(mode="json")}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
@@ -117,11 +125,11 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(ProviderUnavailableError)
     async def provider_unavailable_handler(request: Request, exc: ProviderUnavailableError):
-        return JSONResponse(status_code=503, content={"error": str(exc), "provider_id": exc.provider_id})
+        return JSONResponse(status_code=503, content={"error": str(exc), "provider_id": exc.provider_id, **_dispatch_error_payload(exc)})
 
     @app.exception_handler(ModelUnavailableError)
     async def model_unavailable_handler(request: Request, exc: ModelUnavailableError):
-        return JSONResponse(status_code=404, content={"error": str(exc), "model_id": exc.model_id})
+        return JSONResponse(status_code=404, content={"error": str(exc), "model_id": exc.model_id, **_dispatch_error_payload(exc)})
 
     @app.exception_handler(ContextWindowExceededError)
     async def context_window_handler(request: Request, exc: ContextWindowExceededError):
@@ -135,6 +143,7 @@ def create_app() -> FastAPI:
                 "prompt_tokens": exc.prompt_tokens,
                 "compiled_context_tokens": exc.compiled_context_tokens,
                 "reserved_output_tokens": exc.reserved_output_tokens,
+                **_dispatch_error_payload(exc),
             },
         )
 
@@ -142,23 +151,23 @@ def create_app() -> FastAPI:
     async def malformed_provider_handler(request: Request, exc: MalformedProviderResponseError):
         return JSONResponse(
             status_code=502,
-            content={"error": str(exc), "provider_id": exc.provider_id},
+            content={"error": str(exc), "provider_id": exc.provider_id, **_dispatch_error_payload(exc)},
         )
 
     @app.exception_handler(ProviderTimeoutError)
     async def provider_timeout_handler(request: Request, exc: ProviderTimeoutError):
-        return JSONResponse(status_code=504, content={"error": str(exc)})
+        return JSONResponse(status_code=504, content={"error": str(exc), **_dispatch_error_payload(exc)})
 
     @app.exception_handler(ProviderAuthenticationError)
     async def provider_auth_handler(request: Request, exc: ProviderAuthenticationError):
-        return JSONResponse(status_code=401, content={"error": str(exc)})
+        return JSONResponse(status_code=401, content={"error": str(exc), **_dispatch_error_payload(exc)})
 
     @app.exception_handler(ProviderRateLimitError)
     async def provider_rate_limit_handler(request: Request, exc: ProviderRateLimitError):
         headers = {}
         if exc.retry_after is not None:
             headers["Retry-After"] = str(int(exc.retry_after))
-        return JSONResponse(status_code=429, content={"error": str(exc)}, headers=headers)
+        return JSONResponse(status_code=429, content={"error": str(exc), **_dispatch_error_payload(exc)}, headers=headers)
 
     @app.exception_handler(RoutingFailureError)
     async def routing_failure_handler(request: Request, exc: RoutingFailureError):

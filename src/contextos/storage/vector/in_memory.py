@@ -34,6 +34,13 @@ class InMemoryVectorStore:
         self._vectors: np.ndarray = np.empty((0, dimension), dtype=np.float32)
         self._metadata: dict[str, dict[str, Any]] = {}
 
+    def contains(self, doc_id: str | Any) -> bool:
+        """Check whether a document ID is present in the vector store."""
+        return str(doc_id) in self._metadata
+
+    def __contains__(self, doc_id: str | Any) -> bool:
+        return str(doc_id) in self._metadata
+
     async def add(
         self,
         ids: list[str],

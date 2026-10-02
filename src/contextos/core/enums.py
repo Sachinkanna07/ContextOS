@@ -477,3 +477,13 @@ class ProviderType(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+
+
+class ProviderDispatchState(StrEnum):
+    """Observable lifecycle state of a downstream model provider dispatch."""
+
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    REQUEST_CONSTRUCTED = "REQUEST_CONSTRUCTED"
+    DISPATCH_ATTEMPTED = "DISPATCH_ATTEMPTED"
+    RESPONSE_RECEIVED = "RESPONSE_RECEIVED"
+    DISPATCH_FAILED = "DISPATCH_FAILED"

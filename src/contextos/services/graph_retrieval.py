@@ -97,12 +97,15 @@ class GraphAugmentedRetrievalEngine:
                 bm25_score=original.bm25_score if original else None,
                 lexical_rank=original.lexical_rank if original else None,
                 dense_rank=original.dense_rank if original else None,
+                rrf_rank=base_ranks.get(memory_id, 0),
+                metadata_adjustment=original.metadata_adjustment if original else 0.0,
                 retrieval_sources=list(dict.fromkeys(sources)),
                 graph_score=expansion.candidate_scores.get(memory_id),
                 graph_rank=graph_ranks.get(memory_id),
                 graph_paths=expansion.candidate_paths.get(memory_id, []),
             ))
         fused.sort(key=lambda item: (-item.final_score, str(item.memory.id)))
+        pre_limit_ids = [str(item.memory.id) for item in fused]
         fused = fused[:request.k]
         for rank, item in enumerate(fused, 1):
             item.rank = rank
@@ -127,6 +130,11 @@ class GraphAugmentedRetrievalEngine:
             total_latency_ms=(time.perf_counter() - started) * 1000,
             total_candidates=len(identifiers),
             total_results=len(fused),
+            lexical_candidate_ids=base_result.trace.lexical_candidate_ids,
+            dense_candidate_ids=base_result.trace.dense_candidate_ids,
+            pre_limit_candidate_ids=pre_limit_ids[:200],
+            channel_candidates_truncated=base_result.trace.channel_candidates_truncated,
+            pre_limit_candidates_truncated=len(pre_limit_ids) > 200,
         )
         strategies = dict(base_result.strategy_results)
         strategies["graph"] = [item for item in fused if "graph" in item.retrieval_sources]

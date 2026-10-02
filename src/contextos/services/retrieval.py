@@ -114,7 +114,9 @@ class HybridRetrievalEngine:
         rank_started = time.perf_counter()
         scored = self._rank(request, memories, lexical, dense, rrf_k=(config.rrf_k if config else 60))
         minimum = config.min_score if config else 0.0
-        scored = [item for item in scored if item.final_score >= minimum][:request.k]
+        pre_limit_scored = [item for item in scored if item.final_score >= minimum]
+        pre_limit_ids = [str(item.memory.id) for item in pre_limit_scored]
+        scored = pre_limit_scored[:request.k]
         for rank, item in enumerate(scored, 1):
             item.rank = rank
         stages.append(self._stage(
@@ -131,6 +133,11 @@ class HybridRetrievalEngine:
             total_latency_ms=total_latency,
             total_candidates=len(ids),
             total_results=len(scored),
+            lexical_candidate_ids=[str(item.id) for item in lexical[:100]],
+            dense_candidate_ids=[str(item.id) for item in dense[:100]],
+            pre_limit_candidate_ids=pre_limit_ids[:200],
+            channel_candidates_truncated=len(lexical) > 100 or len(dense) > 100,
+            pre_limit_candidates_truncated=len(pre_limit_ids) > 200,
         )
         strategy_results = {
             name: [item for item in scored if name in item.retrieval_sources]

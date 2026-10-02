@@ -188,12 +188,32 @@ class ContextOSMCPApplication:
         expansion = await self.services["graph"].expand(query_text=self._text(entity, self.limits.input_chars), max_hops=self._positive(max_hops, 3), max_nodes=self._positive(max_nodes, self.limits.graph_nodes), max_edges=self._positive(max_edges, self.limits.graph_edges))
         return {"ok": True, "seed_node_ids": [str(value) for value in expansion.seed_node_ids], "visited_node_ids": [str(value) for value in expansion.visited_node_ids], "edge_ids": [str(value) for value in expansion.traversed_edge_ids], "supporting_memory_ids": [str(value) for value in expansion.candidate_scores], "graph_node_count": len(expansion.visited_node_ids)}
 
-    async def explain(self, query: str, token_budget: int, mode: str) -> dict[str, object]:
+    async def explain(self, query: str, token_budget: int, mode: str, memory_id: str | None = None,
+                      temporal_scope: str = "current") -> dict[str, object]:
         if not self.policy.allow_read: return _error("PERMISSION_DENIED")
         clean, budget = self._text(query, self.limits.input_chars), self._positive(token_budget, self.limits.compilation_tokens)
-        retrieved = await self.services["retrieval"].retrieve(RetrievalQuery(text=clean, mode=RetrievalMode(mode), k=self.limits.search_results, include_trace=True))
-        selection = self.services["optimizer"].optimize(clean, retrieved.memories, ContextBudget(max_tokens=budget))
-        return {"ok": True, "selected": [{"memory_id": str(value.memory.id), "rank": value.rank, "retrieval_sources": list(value.retrieval_sources), "graph_contribution": value.graph_score, "confidence": value.memory.confidence, "importance": value.memory.importance, "token_cost": value.memory.token_count} for value in selection.selected_memories], "decisions": [item.model_dump(mode="json") for item in selection.trace.decisions], "result_count": len(selection.selected_memories)}
+        from contextos.services.explainability import ExplainabilityService, ExplanationRequest
+        service = self.services.get("explainability") or ExplainabilityService(self.services)
+        from uuid import UUID
+        try:
+            target_memory_id = UUID(memory_id) if memory_id is not None else None
+        except (TypeError, ValueError):
+            raise ValueError from None
+        from contextos.core.enums import TemporalScope
+        trace = await service.explain(ExplanationRequest(query=clean, mode=RetrievalMode(mode), budget=budget, limit=self.limits.search_results, target_memory_id=target_memory_id, temporal_scope=TemporalScope(temporal_scope)))
+        data = trace.model_dump(mode="json")
+        candidate_by_id = {item["memory_id"]: item for item in data["candidates"]}
+        return {"ok": True, **data, "selected": [
+                    {"memory_id": value, "rank": candidate_by_id.get(value, {}).get("rank"),
+                     "retrieval_sources": candidate_by_id.get(value, {}).get("retrieval", {}).get("sources", []),
+                     "graph_contribution": candidate_by_id.get(value, {}).get("retrieval", {}).get("graph_score"),
+                     "confidence": candidate_by_id.get(value, {}).get("confidence"),
+                     "importance": candidate_by_id.get(value, {}).get("importance"),
+                     "token_cost": candidate_by_id.get(value, {}).get("token_cost")}
+                    for value in data["selected"]],
+                "decisions": [item["optimizer"]["decision"] for item in data["candidates"]
+                              if item["optimizer"].get("decision") is not None],
+                "result_count": len(data["selected"])}
 
     async def telemetry_summary(self) -> dict[str, object]:
         if not self.policy.allow_telemetry: return _error("PERMISSION_DENIED")
@@ -221,7 +241,7 @@ def create_mcp_server(services: dict[str, Any], permissions: MCPPermissions | No
     @server.tool()
     async def contextos_graph_neighbors(entity: str, max_hops: int = 1, max_nodes: int = 50, max_edges: int = 100, session_id: str | None = None) -> dict[str, object]: return await app.invoke("contextos_graph_neighbors", session_id, lambda: app.graph_neighbors(entity, max_hops, max_nodes, max_edges))
     @server.tool()
-    async def contextos_explain_context(query: str, token_budget: int = 1000, mode: str = "hybrid", session_id: str | None = None) -> dict[str, object]: return await app.invoke("contextos_explain_context", session_id, lambda: app.explain(query, token_budget, mode))
+    async def contextos_explain_context(query: str, token_budget: int = 1000, mode: str = "hybrid", memory_id: str | None = None, temporal_scope: str = "current", session_id: str | None = None) -> dict[str, object]: return await app.invoke("contextos_explain_context", session_id, lambda: app.explain(query, token_budget, mode, memory_id, temporal_scope))
     @server.tool()
     async def contextos_telemetry_summary(session_id: str | None = None) -> dict[str, object]: return await app.invoke("contextos_telemetry_summary", session_id, app.telemetry_summary)
     return server

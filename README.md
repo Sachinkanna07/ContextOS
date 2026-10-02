@@ -13,7 +13,7 @@ ContextOS runs locally as a background daemon and gives any connected LLM persis
 
 ## Status
 
-**Phase 12 working tree** — Terminal dashboard and operational commands (uncommitted).
+**Phase 13 working tree** — Deterministic retrieval and compilation explanations (uncommitted).
 
 ## Quick Start
 
@@ -33,6 +33,9 @@ contextos retrieve "What are my coding preferences?"
 
 # Compile optimized context for an LLM
 contextos compile "Help me set up a new Python project" --show-context
+
+# Explain retrieval and compilation decisions
+contextos explain "What are my coding preferences?"
 
 # Check system status
 contextos status
