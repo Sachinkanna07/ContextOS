@@ -11,6 +11,7 @@ import pytest
 from mcp import Client, StdioServerParameters
 
 from contextos.core.models import MemoryFilters
+from contextos.config.settings import DaemonConfig
 from contextos.storage.database import Database
 from contextos.storage.memory_repo import SqliteMemoryRepository
 
@@ -34,7 +35,7 @@ async def test_contextos_mcp_entrypoint_uses_real_sqlite_and_persists(tmp_path: 
     )
     environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
     parameters = StdioServerParameters(command=sys.executable, args=["-m", "contextos.mcp.server"], env=environment, cwd=str(Path.cwd()))
-    async with Client(parameters, read_timeout_seconds=15) as client:
+    async with Client(parameters, read_timeout_seconds=DaemonConfig().readiness_timeout) as client:
         listed = await client.list_tools()
         assert client.server_info.name == "ContextOS" and len(listed.tools) == 8
         remembered = body(await client.call_tool("contextos_remember", {"text": "I am working on Project Atlas. Project Atlas uses Ollama."}))

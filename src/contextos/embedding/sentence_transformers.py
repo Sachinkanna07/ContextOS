@@ -45,7 +45,7 @@ class SentenceTransformerEmbedding:
         except ImportError:
             raise RuntimeError(
                 "sentence-transformers is required for SentenceTransformerEmbedding. "
-                "Install ContextOS with the embeddings extra: pip install 'contextos[embeddings]'"
+                "Install ContextOS with the embeddings extra: pip install 'contextos-memory-runtime[embeddings]'"
             )
         except Exception as e:
             raise RuntimeError(f"Failed to load embedding model '{self._model_name}': {e}") from e

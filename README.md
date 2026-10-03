@@ -14,16 +14,16 @@ Python 3.12+ is declared; this release has been verified on Windows with Python 
 
 Core lightweight installation (uses deterministic/local capabilities):
 ```powershell
-pip install contextos
+pip install contextos-memory-runtime
 ```
 
 Core defaults use hashed deterministic embeddings and word-token accounting labeled `APPROXIMATED`. These embeddings are an offline baseline; SentenceTransformer retrieval quality is not implied. FakeProvider is a local simulation.
 
-Rebuilt RC1 archives are approximately **220 KB for the wheel** and **300 KB for the sdist** (decimal units). These sizes exclude installed dependencies. Run `python tools/validate_release_artifacts.py` after a rebuild for exact byte counts.
+Rebuilt RC2 archives are approximately **220 KB for the wheel** and **300 KB for the sdist** (decimal units). These sizes exclude installed dependencies. Run `python tools/validate_release_artifacts.py` after a rebuild for exact byte counts.
 
 With optional local sentence-transformers embeddings extra:
 ```powershell
-pip install "contextos[embeddings]"
+pip install "contextos-memory-runtime[embeddings]"
 ```
 
 Installing the extra does not change defaults. Explicitly set `[embedding]` with `model = "all-MiniLM-L6-v2"` in your ContextOS `config.toml` to select it; first use may download that model unless provisioned locally. Exact context counting is also opt-in: set `[token_counter]` with `encoding = "cl100k_base"` or `"o200k_base"`, and provision its tokenizer cache before offline use. Default `encoding = "deterministic"` needs no tokenizer assets.
@@ -95,4 +95,6 @@ python -m pip check
 git diff --check
 ```
 
-`make test`, `make lint`, `make typecheck`, and `make check` are available when `make` is installed. The package is currently version 1.0.0-rc1. License: MIT.
+`make test`, `make lint`, `make typecheck`, and `make check` are available when `make` is installed. The package is currently version 1.0.0-rc2. License: MIT.
+
+Background `contextos start` polls the initialized daemon for up to 10 seconds before reporting success. Existing-daemon readiness requires the health PID to match the verified recorded PID at the configured host and port. Startup and stop share a Windows/POSIX lifecycle lock with a 15-second acquisition timeout; concurrent starters wait, then report the verified daemon as already running. The persistent `contextos.lock` file is reusable and OS lock ownership is released on process exit. PID publication is atomic, and failed startup cleans up only its own process tree and matching PID state. `contextos doctor` can be run immediately after a successful start.

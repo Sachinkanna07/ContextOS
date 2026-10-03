@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "contextos"
-version = "1.0.0rc1"
+name = "contextos-memory-runtime"
+version = "1.0.0rc2"
 description = "Local-first personal AI memory runtime"
 readme = "README.md"
 license = "MIT"

@@ -10,7 +10,7 @@ import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
-VERSION = "1.0.0rc1"
+VERSION = "1.0.0rc2"
 FORBIDDEN_PARTS = {
     ".git", ".kilo", ".venv", "venv", ".pytest_cache", "__pycache__",
     ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "dist", "build",
@@ -45,7 +45,7 @@ def validate_member(name: str, package_root: str) -> None:
 
 def _validate_metadata(payload: bytes) -> None:
     metadata = email.message_from_bytes(payload)
-    if metadata["Name"] != "contextos" or metadata["Version"] != VERSION:
+    if metadata["Name"] != "contextos-memory-runtime" or metadata["Version"] != VERSION:
         raise ValueError("Release metadata name/version mismatch")
     if metadata["Requires-Python"] != ">=3.12":
         raise ValueError("Requires-Python mismatch")
@@ -69,10 +69,10 @@ def validate_artifacts(wheel: Path, sdist: Path) -> dict[str, int]:
             validate_member(name, "contextos/")
         if not {"contextos/" + name for name in REQUIRED_MODULES} <= names:
             raise ValueError("Wheel is missing required modules")
-        _validate_metadata(archive.read(f"contextos-{VERSION}.dist-info/METADATA"))
+        _validate_metadata(archive.read(f"contextos_memory_runtime-{VERSION}.dist-info/METADATA"))
         if f'__version__ = "{VERSION}"'.encode() not in archive.read("contextos/__init__.py"):
             raise ValueError("Wheel package version mismatch")
-    prefix = f"contextos-{VERSION}/"
+    prefix = f"contextos_memory_runtime-{VERSION}/"
     with tarfile.open(sdist) as source:
         names = set(source.getnames())
         for member in source.getmembers():
@@ -96,8 +96,8 @@ def main() -> None:
     parser.add_argument("--dist", type=Path, default=Path("dist"))
     args = parser.parse_args()
     sizes = validate_artifacts(
-        args.dist / f"contextos-{VERSION}-py3-none-any.whl",
-        args.dist / f"contextos-{VERSION}.tar.gz",
+        args.dist / f"contextos_memory_runtime-{VERSION}-py3-none-any.whl",
+        args.dist / f"contextos_memory_runtime-{VERSION}.tar.gz",
     )
     print(f"Release artifacts PASS: {sizes}")
 

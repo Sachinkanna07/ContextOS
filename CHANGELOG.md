@@ -5,6 +5,14 @@ All notable changes to ContextOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc2] - 2026-10-03
+
+- Distribution renamed to `contextos-memory-runtime`; imports and commands remain `contextos`.
+- Bounded startup serialization using cross-platform OS lifecycle locks (`msvcrt` on Windows, `flock` on POSIX) with configured timeouts (30s readiness, 45s lock).
+- OS TCP listener ownership verification: verifies that the configured loopback listener belongs to the verified ContextOS daemon process tree, rejecting spoofed endpoint PID claims.
+- Recoverable startup ownership: daemon publishes durable identity prior to binding, ensuring that readiness implies discoverable lifecycle registration even if the starter process exits prematurely.
+- Compare-before-delete lifecycle cleanup preserving survivor state during concurrent start or failed attempts.
+
 ## [1.0.0-rc1] - 2026-10-02
 
 ### Added
@@ -20,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Terminal UX & Dashboard:** Interactive CLI (`contextos stats`, `monitor`, `desktop`), rich terminal formatting, and diagnostic health checks (`contextos doctor`).
 - **Explainability & RAG Inspector:** Non-intrusive trace generation and context inspection CLI (`contextos inspect`) for single-pass and side-by-side retrieval mode comparison.
 - **Canonical Benchmarking & Evaluation Suite:** Synthetic benchmarking framework (`contextos.benchmarks.final`) evaluating 100 and 1,000 memory corpora across Vector, Hybrid, Hybrid+Graph, and ContextOS strategies.
-- **Packaging & Modular Distribution:** Core `contextos` package decoupled from heavyweight ML frameworks, making `sentence-transformers` an optional extra (`pip install "contextos[embeddings]"`).
+- **Packaging & Modular Distribution:** Core `contextos` package decoupled from heavyweight ML frameworks, making `sentence-transformers` an optional extra (`pip install "contextos-memory-runtime[embeddings]"`).
 
 ### Release blocker repairs
 - Core defaults use hashed deterministic embeddings and word-token accounting labeled `APPROXIMATED`. Optional SentenceTransformer embeddings and exact tiktoken counting require explicit configuration.

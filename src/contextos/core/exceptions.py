@@ -167,6 +167,10 @@ class DaemonNotRunningError(DaemonError):
         super().__init__("ContextOS daemon is not running. Start it with: contextos start")
 
 
+class DaemonLockTimeoutError(DaemonError):
+    """Raised when acquiring the daemon lifecycle lock times out."""
+
+
 # --- Configuration Errors ---
 
 

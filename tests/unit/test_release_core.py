@@ -74,7 +74,7 @@ async def test_default_core_real_wiring_is_offline(
             assert doctor.json()["overall"] is True
             dashboard = await client.get("/api/v1/dashboard")
             assert dashboard.status_code == 200
-        with pytest.raises(RuntimeError, match=r"contextos\[embeddings\]"):
+        with pytest.raises(RuntimeError, match=r"contextos-memory-runtime\[embeddings\]"):
             await SentenceTransformerEmbedding().embed_query("explicit optional embedding")
         assert not offline_assets
     finally:

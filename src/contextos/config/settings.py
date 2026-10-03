@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -48,6 +48,14 @@ class DaemonConfig(BaseSettings):
     log_level: str = "info"
     data_dir: Path = Field(default_factory=_default_data_dir)
     config_dir: Path = Field(default_factory=_default_config_dir)
+    readiness_timeout: float = Field(default=30.0, ge=1, le=300, allow_inf_nan=False)
+    lock_timeout: float = Field(default=45.0, ge=1, le=600, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def bounded_startup(self):
+        if self.lock_timeout <= self.readiness_timeout + 5:
+            raise ValueError("lock_timeout must exceed readiness_timeout by more than 5 seconds")
+        return self
 
     @field_validator("host")
     @classmethod

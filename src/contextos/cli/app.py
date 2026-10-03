@@ -49,14 +49,16 @@ def _base_url() -> str:
     """Get the daemon base URL."""
     from contextos.config.settings import load_settings
     settings = load_settings()
-    return f"http://{settings.daemon.host}:{settings.daemon.port}"
+    host = "127.0.0.1" if settings.daemon.host == "localhost" else settings.daemon.host
+    host = f"[{host}]" if ":" in host else host
+    return f"http://{host}:{settings.daemon.port}"
 
 
 def _api(method: str, path: str, **kwargs) -> httpx.Response:
     """Make an API request to the daemon."""
     url = f"{_base_url()}/api/v1{path}"
     try:
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=30.0, trust_env=False) as client:
             response = client.request(method, url, **kwargs)
             if response.status_code >= 400:
                 try:
@@ -85,22 +87,33 @@ def start(
 ) -> None:
     """Start the ContextOS daemon."""
     from contextos.config.settings import load_settings
-    from contextos.daemon.manager import is_running, start_daemon
+    from contextos.core.exceptions import DaemonAlreadyRunningError, DaemonLockTimeoutError
+    from contextos.daemon.manager import start_daemon
 
     settings = load_settings()
-    running, pid = is_running(settings)
-
-    if running:
-        console.print(f"[yellow]ContextOS daemon is already running (PID: {pid})[/yellow]")
-        raise typer.Exit(0)
-
     if foreground:
+        import os
+        from contextos.config.settings import Settings
+        child_settings = os.environ.get("CONTEXTOS_DAEMON_SETTINGS")
+        if child_settings:
+            settings = Settings.model_validate_json(child_settings)
         console.print("[bold]Starting ContextOS daemon (foreground)...[/bold]")
         start_daemon(settings, foreground=True)
-    else:
-        console.print("[bold]Starting ContextOS daemon...[/bold]")
+        return
+
+    console.print("[bold]Starting ContextOS daemon...[/bold]")
+    try:
         start_daemon(settings, foreground=False)
-        console.print(f"[green][OK][/green] Daemon started on {settings.daemon.host}:{settings.daemon.port}")
+    except DaemonAlreadyRunningError as exc:
+        console.print(f"[yellow]ContextOS daemon is already running (PID: {exc.pid})[/yellow]")
+        raise typer.Exit(0)
+    except DaemonLockTimeoutError as exc:
+        error_console.print(f"Error: {exc}")
+        raise typer.Exit(1) from exc
+    except (RuntimeError, OSError) as exc:
+        error_console.print(f"Error: {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[green][OK][/green] Daemon started on {settings.daemon.host}:{settings.daemon.port}")
 
 
 @app.command()
