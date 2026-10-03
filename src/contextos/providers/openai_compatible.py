@@ -112,23 +112,6 @@ class OpenAICompatibleProvider:
 
     async def list_models(self) -> list[ModelCapabilities]:
         """Fetch model inventory from /models."""
-        if not await self.health():
-            return [
-                ModelCapabilities(
-                    provider_id=self._provider_id,
-                    model_id=self._default_model,
-                    display_name=self._default_model,
-                    context_window=8192,
-                    max_output_tokens=2048,
-                    supports_tools=True,
-                    supports_json=True,
-                    supports_vision=False,
-                    local=self._is_local,
-                    tokenizer_family="cl100k_base",
-                    enabled=False,
-                )
-            ]
-
         try:
             client = self._get_client(timeout=5.0)
             if self._client is not None:
@@ -153,9 +136,13 @@ class OpenAICompatibleProvider:
                 raise
             raise ProviderUnavailableError(self._provider_id, "Failed listing models") from exc
 
-        raw_models = data.get("data", [])
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid model inventory")
+        raw_models = data["data"]
         capabilities: list[ModelCapabilities] = []
         for m in raw_models:
+            if not isinstance(m, dict) or not isinstance(m.get("id"), str):
+                continue
             mid = m.get("id", "")
             if not mid:
                 continue
@@ -177,23 +164,6 @@ class OpenAICompatibleProvider:
                     supports_vision="vision" in mid.lower(),
                     local=self._is_local,
                     tokenizer_family=family,
-                    enabled=True,
-                )
-            )
-
-        if not capabilities:
-            capabilities.append(
-                ModelCapabilities(
-                    provider_id=self._provider_id,
-                    model_id=self._default_model,
-                    display_name=self._default_model,
-                    context_window=8192,
-                    max_output_tokens=2048,
-                    supports_tools=True,
-                    supports_json=True,
-                    supports_vision=False,
-                    local=self._is_local,
-                    tokenizer_family="cl100k_base",
                     enabled=True,
                 )
             )

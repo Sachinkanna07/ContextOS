@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
@@ -60,15 +58,10 @@ async def ask_model(request: AskApiRequest) -> AskResult:
 @router.get("/models", response_model=list[ModelCapabilities])
 async def list_models() -> list[ModelCapabilities]:
     """List all models offered across registered providers."""
-    providers: dict[str, Any] = get_service("providers")
-    all_models: list[ModelCapabilities] = []
-    for prov in providers.values():
-        try:
-            m_list = await prov.list_models()
-            all_models.extend(m_list)
-        except Exception:
-            continue
-    return all_models
+    models: list[ModelCapabilities] = await get_service("model_discovery").list_models(
+        get_service("providers"),
+    )
+    return models
 
 
 @router.get("/telemetry/summary", response_model=TelemetrySummary)

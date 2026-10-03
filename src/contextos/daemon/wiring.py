@@ -259,6 +259,9 @@ def _wire_initialized_services(
     services["ollama_provider"] = ollama_provider
     services["openai_compatible_provider"] = openai_compatible_provider
     services["providers"] = providers
+    from contextos.services.model_discovery import ModelDiscovery
+
+    services["model_discovery"] = ModelDiscovery()
 
     # --- Phase 9: Model Router ---
     from contextos.core.enums import RoutingPolicy

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID  # noqa: TC003 -- FastAPI resolves UUID route parameters at runtime.
@@ -14,10 +13,9 @@ from pydantic import BaseModel, Field
 
 from contextos.api.server import get_service
 from contextos.core.enums import MemoryStatus, SourceRole
-from contextos.core.models import IngestRequest, MemoryFilters, ModelCapabilities
+from contextos.core.models import IngestRequest, MemoryFilters
 
 router = APIRouter(tags=["terminal"])
-_model_cache: tuple[float, object, list[dict[str, Any]]] | None = None
 
 
 def _public_label(value: object) -> str:
@@ -47,8 +45,8 @@ class RememberRequest(BaseModel):
 
 @router.get("/dashboard")
 async def dashboard(
-    model: str | None = Query(default=None, max_length=200),
-    provider: str | None = Query(default=None, max_length=200),
+    model: str | None = Query(default=None, min_length=1, max_length=200, pattern=r".*\S.*"),
+    provider: str | None = Query(default=None, min_length=1, max_length=200, pattern=r".*\S.*"),
     period: Literal["all", "today", "week"] = "all",
 ) -> dict[str, Any]:
     repo = get_service("memory_repo")
@@ -80,30 +78,13 @@ async def dashboard(
         row["provider"] = _public_label(row["provider"])
         row["model"] = _public_label(row["model"])
         row["context_tokenizer"] = _public_label(row["context_tokenizer"])
-    global _model_cache
-    providers = get_service("providers")
-    if (
-        _model_cache is None
-        or _model_cache[1] is not providers
-        or time.monotonic() >= _model_cache[0]
-    ):
-        async def discover(provider: Any) -> list[ModelCapabilities]:
-            try:
-                inventory = await asyncio.wait_for(provider.list_models(), timeout=1.0)
-                if not isinstance(inventory, list):
-                    return []
-                return [item for item in inventory if isinstance(item, ModelCapabilities)]
-            except Exception:
-                return []
-        inventories = await asyncio.gather(*(discover(p) for p in providers.values()))
-        discovered = [
-            {"provider": _public_label(item.provider_id), "model": _public_label(item.model_id),
-             "local": item.local, "enabled": item.enabled,
-             "simulated": item.provider_id == "fake"}
-            for inventory in inventories for item in inventory
-        ][:50]
-        _model_cache = (time.monotonic() + 10.0, providers, discovered)
-    discovered = _model_cache[2]
+    inventory = await get_service("model_discovery").list_models(get_service("providers"))
+    discovered = [
+        {"provider": _public_label(item.provider_id), "model": _public_label(item.model_id),
+         "local": item.local, "enabled": item.enabled,
+         "simulated": item.provider_id == "fake"}
+        for item in inventory
+    ][:50]
     mcp = get_service("settings").mcp
     return {
         "memories": {

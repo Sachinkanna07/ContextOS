@@ -146,6 +146,16 @@ def status(
         format_status(SystemStatus(**data))
 
 
+def _dashboard_params(model: str | None, provider: str | None, period: str = "all") -> dict[str, str]:
+    params = {"period": period}
+    for name, value in (("model", model), ("provider", provider)):
+        if value is not None:
+            if not value.strip():
+                raise typer.BadParameter(f"--{name} must not be empty")
+            params[name] = value
+    return params
+
+
 @app.command()
 def stats(
     model: str | None = typer.Option(None, "--model", help="Filter by model ID"),
@@ -158,10 +168,9 @@ def stats(
     """Show real activity and model-specific token statistics."""
     if today and week:
         raise typer.BadParameter("Choose --today or --week")
-    resp = _api("GET", "/dashboard", params={
-        "model": model, "provider": provider,
-        "period": "today" if today else "week" if week else "all",
-    })
+    resp = _api("GET", "/dashboard", params=_dashboard_params(
+        model, provider, "today" if today else "week" if week else "all",
+    ))
     data = resp.json()
 
     if json_output:
@@ -180,11 +189,12 @@ def monitor(
 ) -> None:
     """Watch bounded local activity until Ctrl-C or the requested sample count."""
     from contextos.cli.dashboard import render_dashboard
+    params = _dashboard_params(model, provider)
     count = 0
     try:
         with Live(console=console, refresh_per_second=2, screen=False) as live:
             while samples is None or count < samples:
-                data = _api("GET", "/dashboard", params={"model": model, "provider": provider}).json()
+                data = _api("GET", "/dashboard", params=params).json()
                 live.update(render_dashboard(data, model), refresh=True)
                 count += 1
                 if samples is None or count < samples:

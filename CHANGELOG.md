@@ -5,6 +5,14 @@ All notable changes to ContextOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc3] - 2026-10-03
+
+- Stats and monitor omit absent optional model/provider filters and reject empty or whitespace-only filters. Dashboard API rejects blank filters too.
+- Dashboard and model listing share concurrent, bounded inventory discovery (5 seconds per provider). Successful inventories cache for 10 seconds; failures/empty inventories refresh after 1 second. Concurrent refreshes coalesce per provider, provider replacement invalidates its cache, and failures do not suppress healthy providers.
+- Ollama and OpenAI-compatible inventories use one request, bypass transient health-cache failures, and never fabricate default models for unavailable or empty inventories.
+- Ollama 5xx diagnostics expose only recognized, bounded runtime facts and constrained exit codes; arbitrary error bodies, credentials, paths and terminal controls are excluded. Malformed chat/usage responses preserve typed exceptions; zero usage remains provider-reported and missing usage counts all dispatched message content on the appropriate token basis.
+- Local Ollama 0.34.0 investigation reproduced a Qwen3.5 CUDA runner initialization failure (exit `0xc0000409`) with a minimal raw `/api/chat` request outside ContextOS. A subsequent ContextOS-shaped raw request succeeded but exhausted 256 output tokens on thinking with empty final content. Request semantics remain unchanged; no model-name workaround or automatic retry was added. See the RC3 release notes for validation scope.
+
 ## [1.0.0-rc2] - 2026-10-03
 
 - Distribution renamed to `contextos-memory-runtime`; imports and commands remain `contextos`.

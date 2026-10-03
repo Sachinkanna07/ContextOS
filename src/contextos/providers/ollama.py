@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -22,6 +23,38 @@ from contextos.core.models import ModelCapabilities, ModelRequest, ModelResponse
 from contextos.services.token_counter import get_token_counter_for_model
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_diagnostic(response: httpx.Response) -> str:
+    """Expose only recognized runtime facts, never arbitrary provider text.
+
+    Ollama errors can contain prompts, paths or credentials. Match a bounded
+    JSON error and return fixed diagnostic labels plus a constrained exit code.
+    Unknown errors retain the HTTP status alone.
+    """
+    if len(response.content) > 4096:
+        return ""
+    try:
+        data = response.json()
+    except ValueError:
+        return ""
+    error = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(error, str):
+        return ""
+    from contextos.services.explainability import safe_text
+
+    error = safe_text(error, 4096)
+    facts = []
+    if "llama-server process has terminated" in error:
+        facts.append("Ollama model runner terminated")
+        match = re.search(r"exit status (0x[0-9a-fA-F]{1,8})(?![0-9a-fA-F])", error)
+        if match:
+            facts.append(f"exit status {match[1]}")
+    if "CUDA error: shared object initialization failed" in error:
+        facts.append("CUDA shared object initialization failed")
+    if "out of memory" in error.lower():
+        facts.append("runtime out of memory")
+    return "; ".join(facts)[:200]
 
 
 class OllamaProvider:
@@ -73,7 +106,7 @@ class OllamaProvider:
             else:
                 async with client as c:
                     resp = await c.get("/api/tags")
-            self._last_health = (resp.status_code == 200)
+            self._last_health = resp.status_code == 200
         except Exception:
             self._last_health = False
 
@@ -82,24 +115,6 @@ class OllamaProvider:
 
     async def list_models(self) -> list[ModelCapabilities]:
         """Fetch model tags from Ollama."""
-        if not await self.health():
-            # Provider is offline/unhealthy; return disabled default descriptor
-            return [
-                ModelCapabilities(
-                    provider_id=self._provider_id,
-                    model_id=self._default_model,
-                    display_name=self._default_model,
-                    context_window=8192,
-                    max_output_tokens=2048,
-                    supports_tools=True,
-                    supports_json=True,
-                    supports_vision=False,
-                    local=True,
-                    tokenizer_family="llama",
-                    enabled=False,
-                )
-            ]
-
         try:
             client = self._get_client(timeout=5.0)
             if self._client is not None:
@@ -116,15 +131,23 @@ class OllamaProvider:
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(self._provider_id, 5.0) from exc
         except (httpx.ConnectError, httpx.NetworkError) as exc:
-            raise ProviderUnavailableError(self._provider_id, "Could not connect to Ollama") from exc
+            raise ProviderUnavailableError(
+                self._provider_id, "Could not connect to Ollama"
+            ) from exc
         except Exception as exc:
             if isinstance(exc, (ProviderTimeoutError, ProviderUnavailableError)):
                 raise
-            raise ProviderUnavailableError(self._provider_id, "Unexpected failure listing models") from exc
+            raise ProviderUnavailableError(
+                self._provider_id, "Unexpected failure listing models"
+            ) from exc
 
-        raw_models = data.get("models", [])
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid model inventory")
+        raw_models = data["models"]
         capabilities: list[ModelCapabilities] = []
         for m in raw_models:
+            if not isinstance(m, dict) or not isinstance(m.get("name"), str):
+                continue
             name = m.get("name", "")
             if not name:
                 continue
@@ -143,24 +166,6 @@ class OllamaProvider:
                     tokenizer_family=family,
                     enabled=True,
                     metadata={"details": m.get("details", {})},
-                )
-            )
-
-        if not capabilities:
-            # Fallback entry if no models are downloaded yet
-            capabilities.append(
-                ModelCapabilities(
-                    provider_id=self._provider_id,
-                    model_id=self._default_model,
-                    display_name=self._default_model,
-                    context_window=8192,
-                    max_output_tokens=2048,
-                    supports_tools=True,
-                    supports_json=True,
-                    supports_vision=False,
-                    local=True,
-                    tokenizer_family="llama",
-                    enabled=True,
                 )
             )
 
@@ -191,7 +196,7 @@ class OllamaProvider:
 
         messages.append({"role": "user", "content": request.user_prompt})
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": model_name,
             "messages": messages,
             "stream": False,
@@ -219,8 +224,11 @@ class OllamaProvider:
             elif resp.status_code == 429:
                 raise ProviderRateLimitError(self._provider_id)
             elif resp.status_code >= 500:
+                diagnostic = _runtime_diagnostic(resp)
                 raise ProviderUnavailableError(
-                    self._provider_id, f"Server error HTTP {resp.status_code}"
+                    self._provider_id,
+                    f"Server error HTTP {resp.status_code}"
+                    + (f": {diagnostic}" if diagnostic else ""),
                 )
             elif resp.status_code != 200:
                 raise MalformedProviderResponseError(
@@ -236,7 +244,9 @@ class OllamaProvider:
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError(self._provider_id, timeout_val) from exc
         except (httpx.ConnectError, httpx.NetworkError) as exc:
-            raise ProviderUnavailableError(self._provider_id, "Could not connect to Ollama") from exc
+            raise ProviderUnavailableError(
+                self._provider_id, "Could not connect to Ollama"
+            ) from exc
         except Exception as exc:
             if isinstance(
                 exc,
@@ -252,20 +262,26 @@ class OllamaProvider:
                 raise
             raise ProviderUnavailableError(self._provider_id, "Ollama request failed") from exc
 
+        if not isinstance(data, dict) or not isinstance(data.get("message", {}), dict):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid chat response")
         message = data.get("message", {})
         text = message.get("content", "")
         if not text and "response" in data:
             text = data["response"]
 
+        if not isinstance(text, str) or not isinstance(data.get("done", False), bool):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid chat response")
         if not text and not data.get("done", False):
             raise MalformedProviderResponseError(self._provider_id, "Empty response text")
 
         prompt_eval_count = data.get("prompt_eval_count", 0)
         eval_count = data.get("eval_count", 0)
+        if any(type(value) is not int or value < 0 for value in (prompt_eval_count, eval_count)):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid token usage")
 
         latency_ms = (time.perf_counter() - started) * 1000.0
 
-        if prompt_eval_count > 0:
+        if "prompt_eval_count" in data and "eval_count" in data:
             source = TokenMeasurementSource.PROVIDER_REPORTED
             in_tok = prompt_eval_count
             out_tok = eval_count
@@ -274,7 +290,7 @@ class OllamaProvider:
             family = "qwen" if "qwen" in model_name.lower() else "cl100k_base"
             counter = get_token_counter_for_model(model_name, family)
             source = counter.measurement_source
-            in_tok = counter.count(request.user_prompt)
+            in_tok = counter.count("\n\n".join(message["content"] for message in messages))
             out_tok = counter.count(text)
             tot_tok = in_tok + out_tok
 

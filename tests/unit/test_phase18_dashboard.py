@@ -255,7 +255,7 @@ def test_release_version_and_lazy_optional_dependency_behavior() -> None:
     from contextos import __version__
     from contextos.embedding.sentence_transformers import SentenceTransformerEmbedding
 
-    assert __version__ == "1.0.0rc2"
+    assert __version__ == "1.0.0rc3"
     st = SentenceTransformerEmbedding()
     st._model = None  # Force attempt to load
     # Monkeypatch import error behavior
