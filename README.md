@@ -8,6 +8,8 @@ Long conversation histories are expensive and can carry stale or contradictory f
 
 ## Quick start
 
+ContextOS keeps one memory store across supported local and cloud providers. Native text adapters cover Ollama, OpenAI, Anthropic, and Gemini; named OpenAI-compatible endpoints are configurable. Remote providers are disabled by default. **A remote request transmits its compiled ContextOS memory context to the selected provider.** See [provider setup and privacy](docs/providers.md).
+
 Python 3.12+ is declared; this release has been verified on Windows with Python 3.13. Python 3.12 is not yet validated. Core defaults and the offline demo require no commercial API key, model download, or tokenizer cache.
 
 ### Installation
@@ -19,7 +21,7 @@ pip install contextos-memory-runtime
 
 Core defaults use hashed deterministic embeddings and word-token accounting labeled `APPROXIMATED`. These embeddings are an offline baseline; SentenceTransformer retrieval quality is not implied. FakeProvider is a local simulation.
 
-Rebuilt RC2 archives are approximately **220 KB for the wheel** and **300 KB for the sdist** (decimal units). These sizes exclude installed dependencies. Run `python tools/validate_release_artifacts.py` after a rebuild for exact byte counts.
+Run `python tools/validate_release_artifacts.py` after building release archives to check package contents.
 
 With optional local sentence-transformers embeddings extra:
 ```powershell
@@ -42,6 +44,8 @@ contextos doctor
 contextos stats
 "I prefer concise technical explanations." | contextos memories remember
 contextos inspect "What explanation style do I prefer?"
+contextos ask "What explanation style do I prefer?" --provider ollama --model qwen2.5-coder:7b
+contextos models providers
 contextos stop
 ```
 
@@ -74,6 +78,8 @@ Credential-free local file and JSON/JSONL connectors must be configured explicit
 | `contextos memories current/conflicts/history` | Temporal metadata; content is opt-in |
 | `contextos connectors list/status/sync` | Registered connector state and explicit sync |
 | `contextos models list`, `contextos telemetry` | Provider inventory and measured invocation records |
+| `contextos ask "question" --provider ollama --model MODEL` | Ask a model with compiled memory context; `--show-context` opts into printing private context |
+| `contextos models providers` | Safe provider configuration, credential-presence, and discovery status |
 | `contextos benchmark [--extended]`, `contextos demo` | Isolated synthetic evaluation and offline walkthrough |
 
 The dashboard groups provider and model together and keeps context-token counts separate from provider-reported usage. A reduction bar appears only when a single known context tokenizer basis can be compared. Older telemetry with unknown provenance is not silently combined. `--today` is the current UTC day; `--week` is a rolling seven-day window. Session-wide history is not yet persisted as a distinct aggregate.
@@ -95,6 +101,6 @@ python -m pip check
 git diff --check
 ```
 
-`make test`, `make lint`, `make typecheck`, and `make check` are available when `make` is installed. The package is currently version 1.0.0-rc3. License: MIT.
+`make test`, `make lint`, `make typecheck`, and `make check` are available when `make` is installed. The package is currently version 1.0.0-rc4. License: MIT.
 
 Background `contextos start` polls the initialized daemon for up to 10 seconds before reporting success. Existing-daemon readiness requires the health PID to match the verified recorded PID at the configured host and port. Startup and stop share a Windows/POSIX lifecycle lock with a 15-second acquisition timeout; concurrent starters wait, then report the verified daemon as already running. The persistent `contextos.lock` file is reusable and OS lock ownership is released on process exit. PID publication is atomic, and failed startup cleans up only its own process tree and matching PID state. `contextos doctor` can be run immediately after a successful start.

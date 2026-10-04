@@ -5,6 +5,14 @@ All notable changes to ContextOS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc4] - 2026-10-04
+
+- Added native text adapters for OpenAI Responses, Anthropic Messages, and Gemini Interactions using direct HTTP. Cloud adapters require explicit provider configuration and runtime environment credentials; the shared ContextOS memory store and compiler remain provider independent.
+- Added named OpenAI-compatible endpoints with validated base URLs and environment variable key names. Unknown model capabilities are reported conservatively.
+- Added `contextos ask` with JSON, timeout, output limit, temperature, fallback, remote consent, and opt-in compiled context display; added `contextos models providers` for safe provider status.
+- Automatic remote fallback now requires both fallback permission and remote consent. Explicit remote provider selection remains available. Provider errors and request IDs are sanitized; provider usage retains its own measurement source.
+- Added native protocol, privacy, routing, and shared-memory integration tests. Cloud adapters are contract tested; live validation is reported separately.
+
 ## [1.0.0-rc3] - 2026-10-03
 
 - Stats and monitor omit absent optional model/provider filters and reject empty or whitespace-only filters. Dashboard API rejects blank filters too.

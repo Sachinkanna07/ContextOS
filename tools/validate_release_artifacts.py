@@ -10,7 +10,7 @@ import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
-VERSION = "1.0.0rc3"
+VERSION = "1.0.0rc4"
 FORBIDDEN_PARTS = {
     ".git", ".kilo", ".venv", "venv", ".pytest_cache", "__pycache__",
     ".mypy_cache", ".ruff_cache", ".idea", ".vscode", "dist", "build",

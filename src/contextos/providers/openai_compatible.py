@@ -5,12 +5,15 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
+import re
 import time
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from contextos.config.settings import ProviderConfig
 from contextos.core.enums import ModelFinishReason, TokenMeasurementSource
 from contextos.core.exceptions import (
     MalformedProviderResponseError,
@@ -37,6 +40,7 @@ class OpenAICompatibleProvider:
         provider_id: str = "openai_compatible",
         base_url: str = "http://127.0.0.1:8000/v1",
         api_key: str | None = None,
+        api_key_env: str = "",
         default_model: str = "default-model",
         timeout_seconds: float = 30.0,
         is_local: bool | None = None,
@@ -44,27 +48,26 @@ class OpenAICompatibleProvider:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._provider_id = provider_id
-        self._base_url = base_url.rstrip("/")
+        self._base_url = ProviderConfig.safe_base_url(base_url)
         self._api_key = api_key
+        self._api_key_env = api_key_env
         self._default_model = default_model
         self._timeout_seconds = timeout_seconds
         self._health_ttl = health_cache_ttl_seconds
         self._client = client
 
-        # Infer locality if not explicitly specified
-        if is_local is not None:
-            self._is_local = is_local
+        parsed = urlparse(self._base_url)
+        hostname = (parsed.hostname or "").lower()
+        if hostname in {"127.0.0.1", "localhost", "::1"}:
+            loopback = True
         else:
-            parsed = urlparse(self._base_url)
-            hostname = (parsed.hostname or "").lower()
-            if hostname in {"127.0.0.1", "localhost", "0.0.0.0", "::1"} or hostname.endswith(".local"):
-                self._is_local = True
-            else:
-                try:
-                    ip = ipaddress.ip_address(hostname)
-                    self._is_local = ip.is_private or ip.is_loopback
-                except ValueError:
-                    self._is_local = False
+            try:
+                loopback = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                loopback = False
+        # A caller may conservatively mark a loopback endpoint remote, never
+        # upgrade a public endpoint to local and bypass remote consent.
+        self._is_local = loopback and is_local is not False
 
         # Health caching
         self._last_health: bool = False
@@ -78,17 +81,24 @@ class OpenAICompatibleProvider:
     def is_local(self) -> bool:
         return self._is_local
 
+    @property
+    def credential_available(self) -> bool:
+        return self._is_local or not self._api_key_env or bool(os.environ.get(self._api_key_env, "").strip())
+
     def _get_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        key = os.environ.get(self._api_key_env, "").strip() if self._api_key_env else self._api_key
+        if self._api_key_env and not self._is_local and not key:
+            raise ProviderAuthenticationError(self._provider_id, "Credential unavailable")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         return headers
 
     def _get_client(self, timeout: float | None = None) -> httpx.AsyncClient:
         if self._client is not None:
             return self._client
         t = timeout or self._timeout_seconds
-        return httpx.AsyncClient(base_url=self._base_url, headers=self._get_headers(), timeout=t)
+        return httpx.AsyncClient(base_url=self._base_url, timeout=t, trust_env=False, follow_redirects=False)
 
     async def health(self) -> bool:
         """Bounded, cached health check against /models endpoint."""
@@ -102,7 +112,7 @@ class OpenAICompatibleProvider:
                 resp = await client.get("/models", headers=self._get_headers())
             else:
                 async with client as c:
-                    resp = await c.get("/models")
+                    resp = await c.get(self._base_url + "/models", headers=self._get_headers())
             self._last_health = (resp.status_code == 200)
         except Exception:
             self._last_health = False
@@ -118,7 +128,7 @@ class OpenAICompatibleProvider:
                 resp = await client.get("/models", headers=self._get_headers())
             else:
                 async with client as c:
-                    resp = await c.get("/models")
+                    resp = await c.get(self._base_url + "/models", headers=self._get_headers())
 
             if resp.status_code == 401 or resp.status_code == 403:
                 raise ProviderAuthenticationError(self._provider_id)
@@ -159,12 +169,13 @@ class OpenAICompatibleProvider:
                     display_name=mid,
                     context_window=32768 if "32k" in mid.lower() else 8192,
                     max_output_tokens=2048,
-                    supports_tools=True,
-                    supports_json=True,
-                    supports_vision="vision" in mid.lower(),
+                    supports_tools=False,
+                    supports_json=False,
+                    supports_vision=False,
                     local=self._is_local,
                     tokenizer_family=family,
                     enabled=True,
+                    metadata={"capability_source": "unknown"},
                 )
             )
 
@@ -193,11 +204,12 @@ class OpenAICompatibleProvider:
 
         messages.append({"role": "user", "content": request.user_prompt})
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": model_name,
             "messages": messages,
-            "temperature": request.temperature,
         }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
         if request.max_output_tokens:
             payload["max_tokens"] = request.max_output_tokens
 
@@ -209,7 +221,7 @@ class OpenAICompatibleProvider:
                 resp = await client.post("/chat/completions", json=payload, headers=self._get_headers())
             else:
                 async with client as c:
-                    resp = await c.post("/chat/completions", json=payload)
+                    resp = await c.post(self._base_url + "/chat/completions", json=payload, headers=self._get_headers())
 
             if resp.status_code == 401 or resp.status_code == 403:
                 # NEVER leak the API key or raw Authorization header in exception message
@@ -259,13 +271,15 @@ class OpenAICompatibleProvider:
                 raise
             raise ProviderUnavailableError(self._provider_id, "Request failed") from exc
 
-        choices = data.get("choices", [])
-        if not choices:
+        if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
             raise MalformedProviderResponseError(self._provider_id, "Response contained no choices")
-
-        msg = choices[0].get("message", {})
-        text = msg.get("content", "")
-        finish_reason_raw = choices[0].get("finish_reason", "stop")
+        choice = data["choices"][0]
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid choice")
+        text = choice["message"].get("content", "")
+        if not isinstance(text, str):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid message content")
+        finish_reason_raw = choice.get("finish_reason", "stop")
 
         finish_reason = ModelFinishReason.STOP
         if finish_reason_raw == "length":
@@ -273,22 +287,28 @@ class OpenAICompatibleProvider:
         elif finish_reason_raw in {"content_filter", "safety"}:
             finish_reason = ModelFinishReason.CONTENT_FILTER
 
-        usage = data.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
-        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+        usage = data.get("usage")
+        if usage is not None and not isinstance(usage, dict):
+            raise MalformedProviderResponseError(self._provider_id, "Invalid token usage")
+        usage = usage or {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_tokens = usage.get("total_tokens")
+        for value in (prompt_tokens, completion_tokens, total_tokens):
+            if value is not None and (type(value) is not int or value < 0):
+                raise MalformedProviderResponseError(self._provider_id, "Invalid token usage")
 
         latency_ms = (time.perf_counter() - started) * 1000.0
 
-        if prompt_tokens > 0:
+        if prompt_tokens is not None and completion_tokens is not None:
             source = TokenMeasurementSource.PROVIDER_REPORTED
             in_tok = prompt_tokens
             out_tok = completion_tokens
-            tot_tok = total_tokens
+            tot_tok = total_tokens if total_tokens is not None else in_tok + out_tok
         else:
             counter = get_token_counter_for_model(model_name)
             source = counter.measurement_source
-            in_tok = counter.count(request.user_prompt)
+            in_tok = counter.count("\n\n".join(message["content"] for message in messages))
             out_tok = counter.count(text)
             tot_tok = in_tok + out_tok
 
@@ -302,6 +322,9 @@ class OpenAICompatibleProvider:
             latency_ms=latency_ms,
             finish_reason=finish_reason,
             token_measurement_source=source,
-            raw_usage=usage if usage else None,
-            request_id=data.get("id"),
+            raw_usage={"prompt_tokens": in_tok, "completion_tokens": out_tok,
+                       "total_tokens": tot_tok} if source == TokenMeasurementSource.PROVIDER_REPORTED else None,
+            request_id=(data.get("id") if isinstance(data.get("id"), str)
+                        and re.fullmatch(r"chatcmpl-[A-Za-z0-9_-]{1,120}", data["id"])
+                        else None),
         )

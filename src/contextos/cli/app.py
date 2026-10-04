@@ -93,6 +93,7 @@ def start(
     settings = load_settings()
     if foreground:
         import os
+
         from contextos.config.settings import Settings
         child_settings = os.environ.get("CONTEXTOS_DAEMON_SETTINGS")
         if child_settings:
@@ -530,6 +531,66 @@ def models_list(json_output: bool = typer.Option(False, "--json")) -> None:
         if not rows:
             table.add_row("No models available", "", "")
         console.print(table)
+
+
+@models_app.command("providers")
+def models_providers(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Show provider configuration and discovery without exposing credentials."""
+    rows = _api("GET", "/models/providers").json()
+    if json_output:
+        console.print_json(json.dumps(rows))
+        return
+    from rich.table import Table
+
+    from contextos.cli.dashboard import safe
+    table = Table(title="Provider status")
+    for column in ("Provider", "Enabled", "Local", "Credential", "Status", "Models"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(safe(row.get("provider")), str(row.get("enabled")),
+                      str(row.get("local")), safe(row.get("credential")),
+                      safe(row.get("status")), str(row.get("models_found")))
+    console.print(table)
+
+
+@app.command()
+def ask(
+    query: str = typer.Argument(..., help="Question for a model with ContextOS memory"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
+    json_output: bool = typer.Option(False, "--json"),
+    show_context: bool = typer.Option(False, "--show-context"),
+    timeout: float = typer.Option(30.0, "--timeout", min=0.5, max=600),
+    max_output_tokens: int = typer.Option(1024, "--max-output-tokens", min=1, max=32768),
+    temperature: float | None = typer.Option(None, "--temperature", min=0, max=2),
+    allow_fallback: bool = typer.Option(False, "--allow-fallback"),
+    allow_remote: bool = typer.Option(
+        False, "--allow-remote", help="Allow implicit routing to remote providers"
+    ),
+) -> None:
+    """Ask a model using memories from the shared ContextOS store."""
+    from contextos.cli.dashboard import safe
+    from contextos.services.secret_scanner import PatternSecretScanner
+    payload: dict[str, Any] = {"query": query, "provider": provider, "model": model,
+                               "timeout_seconds": timeout, "max_output_tokens": max_output_tokens,
+                               "allow_fallback": allow_fallback, "allow_remote": allow_remote}
+    if temperature is not None:
+        payload["temperature"] = temperature
+    result = _api("POST", "/ask", json=payload, timeout=timeout + 10).json()
+    scanner = PatternSecretScanner()
+    answer, _ = scanner.redact(result["response"]["text"])
+    if json_output:
+        result["response"]["text"] = safe(answer, limit=100000, allow_newlines=True)
+        if not show_context:
+            result.pop("compiled_context", None)
+        console.print_json(json.dumps(result))
+        return
+    console.print(safe(answer, limit=100000, allow_newlines=True), markup=False)
+    if show_context:
+        context = result.get("compiled_context", {}).get("context_text", "")
+        context, _ = scanner.redact(context)
+        console.print("\nCompiled ContextOS context:", style="dim")
+        console.print(safe(context, limit=100000, allow_newlines=True), markup=False)
 
 
 @app.command()

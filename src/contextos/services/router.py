@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING
 
 from contextos.core.enums import RoutingPolicy, TokenMeasurementSource
 from contextos.core.exceptions import (
@@ -18,8 +18,10 @@ from contextos.core.models import (
     ModelRequest,
     RouteDecision,
 )
-from contextos.core.protocols import ModelProvider
 from contextos.services.token_counter import TokenCounter, get_token_counter_for_model
+
+if TYPE_CHECKING:
+    from contextos.core.protocols import ModelProvider
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,8 @@ class DeterministicModelRouter:
                 raise ProviderUnavailableError(prov_id, f"Provider '{prov_id}' not found in registry")
 
             provider = providers[prov_id]
+            if not provider.is_local and not request.provider and not request.allow_remote:
+                raise ProviderUnavailableError(prov_id, "Remote routing requires explicit consent")
             is_healthy = await provider.health()
             if not is_healthy:
                 raise ProviderUnavailableError(prov_id, f"Provider '{prov_id}' is unhealthy")
@@ -95,6 +99,8 @@ class DeterministicModelRouter:
                 raise ProviderUnavailableError(prov_id, "Default provider not registered")
 
             provider = providers[prov_id]
+            if not provider.is_local and not request.allow_remote:
+                raise ProviderUnavailableError(prov_id, "Remote routing requires explicit consent")
             if not await provider.health():
                 raise ProviderUnavailableError(prov_id, "Default provider is unhealthy")
 
@@ -160,7 +166,7 @@ class DeterministicModelRouter:
                 )
 
             # Local provider not found or unhealthy
-            if not request.allow_fallback:
+            if not request.allow_fallback or not request.allow_remote:
                 raise ProviderUnavailableError(
                     initial_provider_tried or "local",
                     "Local providers unavailable and fallback not allowed by request policy",
@@ -208,6 +214,8 @@ class DeterministicModelRouter:
         if chosen_policy == RoutingPolicy.CAPABILITY_AWARE:
             all_candidates: list[tuple[ModelProvider, ModelCapabilities]] = []
             for prov in providers.values():
+                if not prov.is_local and not request.allow_remote:
+                    continue
                 if not await prov.health():
                     continue
                 models = await prov.list_models()

@@ -8,16 +8,17 @@ No magic. No DI framework.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from contextos.config.settings import Settings
 from contextos.core.enums import SecretDetectionMode
 from contextos.storage.database import Database
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from contextos.config.settings import Settings
+    from contextos.connectors.protocols import Connector
+    from contextos.core.protocols import EmbeddingService, ModelProvider
     from contextos.services.token_counter import TokenCounter
 
 
@@ -27,10 +28,10 @@ async def wire_services(settings: Settings) -> dict[str, Any]:
     Returns a dict of {service_name: instance} ready for injection into
     the API server and CLI.
     """
-    from contextos.connectors.local_files import LocalFileConnector
     from contextos.connectors.json_import import JsonImportConnector
+    from contextos.connectors.local_files import LocalFileConnector
 
-    configured_connectors = []
+    configured_connectors: list[Connector] = []
     for connector_id, roots in settings.connectors.local_files.items():
         if not roots or any(not root.is_dir() for root in roots):
             raise ValueError(f"Connector {connector_id} has an invalid local root")
@@ -67,13 +68,13 @@ def _wire_initialized_services(
     conn = db.connection()
 
     # --- Repositories ---
-    from contextos.storage.memory_repo import SqliteMemoryRepository
     from contextos.storage.event_repo import SqliteEventRepository
+    from contextos.storage.memory_repo import SqliteMemoryRepository
 
     memory_repo = SqliteMemoryRepository(conn)
     event_repo = SqliteEventRepository(conn)
-    from contextos.storage.relation_repo import SqliteRelationRepository
     from contextos.storage.graph_repo import SqliteGraphRepository
+    from contextos.storage.relation_repo import SqliteRelationRepository
     relation_repo = SqliteRelationRepository(conn)
     graph_repo = SqliteGraphRepository(conn)
     services["memory_repo"] = memory_repo
@@ -113,6 +114,7 @@ def _wire_initialized_services(
     services["optimizer"] = optimizer
 
     # --- Embedding Service ---
+    embedding_service: EmbeddingService
     if settings.embedding.model == "deterministic":
         # Explicit local/test configuration. This avoids a model download while
         # retaining the normal retrieval, indexing, graph, and SQLite services.
@@ -184,8 +186,8 @@ def _wire_initialized_services(
     services["ingestion"] = ingestion
 
     # --- Phase 11: connector state and bounded sync manager ---
-    from contextos.storage.connector_repo import SqliteConnectorRepository
     from contextos.connectors.manager import ConnectorManager
+    from contextos.storage.connector_repo import SqliteConnectorRepository
     connector_repo = SqliteConnectorRepository(conn)
     services["connector_repo"] = connector_repo
     services["connectors"] = ConnectorManager(
@@ -233,8 +235,8 @@ def _wire_initialized_services(
     services["compilation"] = compiler
 
     # --- Phase 9: Telemetry Repository & Query Service ---
-    from contextos.storage.telemetry_repo import SqliteTelemetryRepository
     from contextos.services.telemetry_query import TelemetryQueryService
+    from contextos.storage.telemetry_repo import SqliteTelemetryRepository
 
     telemetry_repo = SqliteTelemetryRepository(conn)
     telemetry_query = TelemetryQueryService(telemetry_repo)
@@ -242,7 +244,10 @@ def _wire_initialized_services(
     services["telemetry_query"] = telemetry_query
 
     # --- Phase 9: Provider Adapters ---
+    import os
+
     from contextos.providers.fake import DeterministicFakeProvider
+    from contextos.providers.frontier import AnthropicProvider, GeminiProvider, OpenAIProvider
     from contextos.providers.ollama import OllamaProvider
     from contextos.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -250,11 +255,38 @@ def _wire_initialized_services(
     ollama_provider = OllamaProvider()
     openai_compatible_provider = OpenAICompatibleProvider()
 
-    providers = {
+    providers: dict[str, ModelProvider] = {
         fake_provider.provider_id: fake_provider,
         ollama_provider.provider_id: ollama_provider,
         openai_compatible_provider.provider_id: openai_compatible_provider,
     }
+    for provider_id, config, adapter in (
+        ("openai", settings.providers.openai, OpenAIProvider),
+        ("anthropic", settings.providers.anthropic, AnthropicProvider),
+        ("gemini", settings.providers.gemini, GeminiProvider),
+    ):
+        if config.enabled and config.api_key_env and os.environ.get(config.api_key_env, "").strip():
+            providers[provider_id] = adapter(
+                api_key_env=config.api_key_env,
+                default_model=config.default_model,
+            )
+    for provider_id, config in settings.providers.compatible.items():
+        if not config.enabled or not config.base_url:
+            continue
+        # A public endpoint always requires an explicit environment key name.
+        from urllib.parse import urlsplit
+        host = (urlsplit(config.base_url).hostname or "").lower()
+        local = host in {"localhost", "127.0.0.1", "::1"}
+        if not local and (
+            not config.api_key_env or not os.environ.get(config.api_key_env, "").strip()
+        ):
+            continue
+        providers[provider_id] = OpenAICompatibleProvider(
+            provider_id=provider_id, base_url=config.base_url,
+            api_key_env=config.api_key_env, default_model=config.default_model,
+            is_local=local,
+        )
+    services["provider_settings"] = settings.providers
     services["fake_provider"] = fake_provider
     services["ollama_provider"] = ollama_provider
     services["openai_compatible_provider"] = openai_compatible_provider

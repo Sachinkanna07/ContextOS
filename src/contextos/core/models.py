@@ -990,11 +990,12 @@ class ModelRequest(BaseModel):
     provider: str | None = None
     system_prompt: str | None = None
     compiled_context: CompiledContext | None = None
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_output_tokens: int | None = Field(default=1024, ge=1)
     timeout_seconds: float = Field(default=30.0, ge=0.5, le=600.0)
     routing_policy: RoutingPolicy | None = None
     allow_fallback: bool = False
+    allow_remote: bool = False
     required_capabilities: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

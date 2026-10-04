@@ -44,6 +44,10 @@ class ModelDiscovery:
                 entry = _Inventory(provider)
                 self._inventories[key] = entry
             async with entry.lock:
+                if getattr(provider, "credential_available", True) is False:
+                    entry.models = []
+                    entry.expires = monotonic() + FAILURE_CACHE_SECONDS
+                    return []
                 if monotonic() < entry.expires:
                     return entry.models
                 try:

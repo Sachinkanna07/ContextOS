@@ -159,7 +159,7 @@ async def test_e_local_first_no_fallback(router, fake_providers):
 @pytest.mark.asyncio
 async def test_f_local_first_explicit_fallback(router, fake_providers):
     fake_providers["fake-local"].simulate_unhealthy = True
-    req = ModelRequest(user_prompt="Test query", allow_fallback=True)
+    req = ModelRequest(user_prompt="Test query", allow_fallback=True, allow_remote=True)
     decision = await router.route(req, fake_providers, policy=RoutingPolicy.LOCAL_FIRST)
     assert decision.fallback_used is True
     assert decision.selected_provider == "fake-remote"
@@ -206,7 +206,9 @@ async def test_i_deterministic_routing(router, fake_providers):
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_j_routing_trace(router, fake_providers):
-    req = ModelRequest(user_prompt="Trace test", required_capabilities=["tools", "vision"])
+    req = ModelRequest(
+        user_prompt="Trace test", required_capabilities=["tools", "vision"], allow_remote=True
+    )
     decision = await router.route(req, fake_providers, policy=RoutingPolicy.CAPABILITY_AWARE)
     assert decision.policy == RoutingPolicy.CAPABILITY_AWARE
     assert len(decision.candidates_evaluated) > 0

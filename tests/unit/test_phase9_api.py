@@ -8,12 +8,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from contextos.api.server import create_app, set_services
+from contextos.config.settings import ProvidersConfig
 from contextos.core.enums import RoutingPolicy
 from contextos.embedding.deterministic import DeterministicEmbedding
 from contextos.providers.fake import DeterministicFakeProvider
 from contextos.services.compilation import QueryAwareContextCompiler
 from contextos.services.graph import MemoryGraphService
 from contextos.services.graph_retrieval import GraphAugmentedRetrievalEngine
+from contextos.services.model_discovery import ModelDiscovery
 from contextos.services.model_service import ContextOSModelService
 from contextos.services.optimization import MemoryContextOptimizer
 from contextos.services.retrieval import HybridRetrievalEngine
@@ -101,6 +103,8 @@ async def test_client(tmp_path: Path):
         "telemetry_repo": telemetry_repo,
         "telemetry_query": telemetry_query,
         "providers": providers,
+        "provider_settings": ProvidersConfig(),
+        "model_discovery": ModelDiscovery(),
         "router": router,
         "model_service": model_service,
     }

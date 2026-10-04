@@ -94,7 +94,8 @@ class ContextOSModelService:
         target_provider: str | None = None,
         target_model: str | None = None,
         allow_fallback: bool = False,
-        temperature: float = 0.7,
+        allow_remote: bool = False,
+        temperature: float | None = None,
         max_output_tokens: int = 1024,
         timeout_seconds: float = 30.0,
         required_capabilities: list[str] | None = None,
@@ -169,6 +170,7 @@ class ContextOSModelService:
             timeout_seconds=timeout_seconds,
             routing_policy=routing_policy,
             allow_fallback=allow_fallback,
+            allow_remote=allow_remote,
             required_capabilities=required_capabilities or [],
             metadata=req_metadata,
         )

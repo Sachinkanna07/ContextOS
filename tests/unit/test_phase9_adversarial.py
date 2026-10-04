@@ -381,7 +381,7 @@ def test_metadata_secret_injection_and_sanitization():
 # ===========================================================================
 
 def test_openai_compatible_locality_detection():
-    """Verify private LAN and loopback addresses are classified as local, public as remote."""
+    """Only loopback endpoints can be local; LAN/public hosts require remote consent."""
     p1 = OpenAICompatibleProvider(base_url="http://127.0.0.1:8000/v1")
     assert p1.is_local is True
 
@@ -391,14 +391,10 @@ def test_openai_compatible_locality_detection():
     p3 = OpenAICompatibleProvider(base_url="http://[::1]:8000/v1")
     assert p3.is_local is True
 
-    p4 = OpenAICompatibleProvider(base_url="http://192.168.1.50:8000/v1")
-    assert p4.is_local is True
-
-    p5 = OpenAICompatibleProvider(base_url="http://10.0.0.2:8000/v1")
-    assert p5.is_local is True
-
-    p6 = OpenAICompatibleProvider(base_url="http://172.20.1.1:8000/v1")
-    assert p6.is_local is True
+    for lan in ("http://192.168.1.50:8000/v1", "http://10.0.0.2:8000/v1",
+                "http://172.20.1.1:8000/v1"):
+        with pytest.raises(ValueError):
+            OpenAICompatibleProvider(base_url=lan)
 
     p7 = OpenAICompatibleProvider(base_url="https://api.openai.com/v1")
     assert p7.is_local is False
@@ -407,7 +403,7 @@ def test_openai_compatible_locality_detection():
     assert p8.is_local is False
 
     p9 = OpenAICompatibleProvider(base_url="https://api.openai.com/v1", is_local=True)
-    assert p9.is_local is True
+    assert p9.is_local is False
 
 
 # ===========================================================================
@@ -430,6 +426,9 @@ async def test_no_silent_cloud_fallback():
     assert "fallback not allowed" in str(exc_info.value).lower()
 
     req_with_fallback = ModelRequest(user_prompt="Hello", allow_fallback=True)
+    with pytest.raises(ProviderUnavailableError):
+        await router.route(req_with_fallback, providers, policy=RoutingPolicy.LOCAL_FIRST)
+    req_with_fallback.allow_remote = True
     decision = await router.route(req_with_fallback, providers, policy=RoutingPolicy.LOCAL_FIRST)
     assert decision.fallback_used is True
     assert decision.selected_provider == "rem"
@@ -450,9 +449,9 @@ async def test_openai_compatible_malformed_json_response():
         return httpx.Response(200, text="<html>502 Bad Gateway from reverse proxy</html>")
 
     transport = httpx.MockTransport(handler)
-    client = httpx.AsyncClient(transport=transport, base_url="http://test-endpoint/v1")
+    client = httpx.AsyncClient(transport=transport, base_url="https://test-endpoint/v1")
 
-    provider = OpenAICompatibleProvider(base_url="http://test-endpoint/v1", client=client)
+    provider = OpenAICompatibleProvider(base_url="https://test-endpoint/v1", client=client)
     req = ModelRequest(user_prompt="Test")
     with pytest.raises(MalformedProviderResponseError):
         await provider.generate(req)

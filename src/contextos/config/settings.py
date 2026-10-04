@@ -6,10 +6,12 @@ Config is loaded from ~/.config/contextos/config.toml (XDG-compliant).
 
 from __future__ import annotations
 
+import ipaddress
 import platform
 import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -52,7 +54,7 @@ class DaemonConfig(BaseSettings):
     lock_timeout: float = Field(default=45.0, ge=1, le=600, allow_inf_nan=False)
 
     @model_validator(mode="after")
-    def bounded_startup(self):
+    def bounded_startup(self) -> DaemonConfig:
         if self.lock_timeout <= self.readiness_timeout + 5:
             raise ValueError("lock_timeout must exceed readiness_timeout by more than 5 seconds")
         return self
@@ -100,6 +102,77 @@ class LLMConfig(BaseSettings):
     api_key_env: str = ""
 
 
+_PROVIDER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+class ProviderConfig(BaseSettings):
+    """Provider settings contain an environment variable name, never its value."""
+
+    enabled: bool = False
+    api_key_env: str = ""
+    default_model: str = ""
+    base_url: str = ""
+
+    @field_validator("api_key_env")
+    @classmethod
+    def safe_environment_name(cls, value: str) -> str:
+        if value and not _ENV_NAME.fullmatch(value):
+            raise ValueError("api_key_env must be an environment variable name")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def safe_base_url(cls, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or any(ch.isspace() for ch in value)):
+            raise ValueError("base_url must be a credential-free HTTP(S) URL")
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("base_url has an invalid port") from exc
+        host = parsed.hostname.lower()
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            address = None
+        loopback = host == "localhost" or bool(address and address.is_loopback)
+        if parsed.scheme == "http" and not loopback:
+            raise ValueError("plain HTTP is allowed only for loopback endpoints")
+        if address and not address.is_loopback:
+            raise ValueError("private or literal non-loopback IP endpoints are unsupported")
+        if port == 0:
+            raise ValueError("base_url port must be nonzero")
+        return value.rstrip("/")
+
+
+class ProvidersConfig(BaseSettings):
+    openai: ProviderConfig = Field(
+        default_factory=lambda: ProviderConfig(api_key_env="OPENAI_API_KEY")
+    )
+    anthropic: ProviderConfig = Field(
+        default_factory=lambda: ProviderConfig(api_key_env="ANTHROPIC_API_KEY")
+    )
+    gemini: ProviderConfig = Field(
+        default_factory=lambda: ProviderConfig(api_key_env="GEMINI_API_KEY")
+    )
+    compatible: dict[str, ProviderConfig] = Field(default_factory=dict)
+
+    @field_validator("compatible")
+    @classmethod
+    def safe_ids(cls, value: dict[str, ProviderConfig]) -> dict[str, ProviderConfig]:
+        reserved = {"ollama", "openai", "anthropic", "gemini", "fake", "openai_compatible"}
+        if len(value) > 20 or any(
+            not _PROVIDER_ID.fullmatch(key) or key in reserved for key in value
+        ):
+            raise ValueError("Invalid or reserved compatible provider identifier")
+        return value
+
+
 class MCPConfig(BaseSettings):
     """Local MCP exposure; writes and destructive operations fail closed."""
 
@@ -125,7 +198,9 @@ class ConnectorConfig(BaseSettings):
 
     @field_validator("local_files", "json_imports")
     @classmethod
-    def valid_ids(cls, value):
+    def valid_ids(
+        cls, value: dict[str, list[Path]] | dict[str, Path]
+    ) -> dict[str, list[Path]] | dict[str, Path]:
         if len(value) > 20 or any(not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key) for key in value):
             raise ValueError("Connector IDs must be short alphanumeric identifiers")
         return value
@@ -139,6 +214,7 @@ class Settings(BaseSettings):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     connectors: ConnectorConfig = Field(default_factory=ConnectorConfig)
 

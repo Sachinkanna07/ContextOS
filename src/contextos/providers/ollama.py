@@ -159,13 +159,13 @@ class OllamaProvider:
                     display_name=name,
                     context_window=8192,
                     max_output_tokens=2048,
-                    supports_tools=True,
-                    supports_json=True,
+                    supports_tools=False,
+                    supports_json=False,
                     supports_vision=False,
                     local=True,
                     tokenizer_family=family,
                     enabled=True,
-                    metadata={"details": m.get("details", {})},
+                    metadata={"capability_source": "unknown"},
                 )
             )
 
@@ -201,7 +201,7 @@ class OllamaProvider:
             "messages": messages,
             "stream": False,
             "options": {
-                "temperature": request.temperature,
+                "temperature": request.temperature if request.temperature is not None else 0.7,
             },
         }
         if request.max_output_tokens:
