@@ -2,6 +2,14 @@
 
 ContextOS is a local-first, model-independent AI memory runtime. It is not a chatbot. It accepts activity through a privacy boundary, extracts candidate facts, resolves temporal state, persists memories in SQLite, and supplies bounded context to a chosen model. A local daemon exposes a CLI and API; optional STDIO MCP and explicitly configured connectors use the same memory pipeline.
 
+## 30-second overview
+
+- **What it does:** stores and retrieves useful long-term context for LLM applications.
+- **Core ideas:** hybrid retrieval, temporal memory, token-aware context selection, privacy boundaries, and explainability.
+- **Runs locally:** SQLite-backed, CLI/API driven, with optional MCP and connector support.
+- **Why it matters:** reduces reliance on raw conversation history and makes context selection more explicit and inspectable.
+- **Current status:** working local runtime with benchmarks and documented limits; answer-quality gains are not claimed as validated.
+
 ## Why it exists
 
 Long conversation histories are expensive and can carry stale or contradictory facts. ContextOS combines lexical and dense retrieval, temporal eligibility, a token-aware selector, and a context compiler. It records what it selected and what it could prove, without claiming that fewer context tokens automatically improve answers or provider billing.
